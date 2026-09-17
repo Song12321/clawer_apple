@@ -4,14 +4,13 @@
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/venv" />
     </content>
-    <orderEntry type="jdk" jdkName="~\Documents\ChatGPT\apple\.venv" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.11 (clawer_apple)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
-  <component name="PackageRequirementsSettings" />
   <component name="PyDocumentationSettings">
     <option name="format" value="PLAIN" />
+    <option name="myDocStringFormat" value="Plain" />
   </component>
-  <component name="ReSTService" />
-  <component name="TestRunnerService" />
 </module>

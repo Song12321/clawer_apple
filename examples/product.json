@@ -1,8 +1,0 @@
-{
-  "url": "https://www.apple.com.cn/shop/buy-airpods/airpods-5",
-  "expectedBagName": "AirPods 5",
-  "choices": [
-    {"role": "radio", "name": "AirPods 5 RMB 999"},
-    {"role": "radio", "name": "不加镌刻"}
-  ]
-}

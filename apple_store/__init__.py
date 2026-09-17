@@ -1,1 +1,0 @@
-"""Apple China Store automation."""
