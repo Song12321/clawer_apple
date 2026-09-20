@@ -1,0 +1,663 @@
+{
+  "source_sha256": "b2f3cc4766e7752c21a964f59f5350c7cc7a93f3c5b12ff2a4256950c66b39fe",
+  "entry_count": 528,
+  "records": [
+    {
+      "id": 266,
+      "har_index": 332,
+      "started": "2026-09-19T08:50:52.995Z",
+      "duration_ms": 8596,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx/fulfillment",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "continueFromFulfillmentToPickupContact",
+          "_m": "checkout.fulfillment"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "present",
+        "fields": [
+          {
+            "name": "checkout.fulfillment.fulfillmentOptions.selectFulfillmentLocation",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.showAllStores",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.selectStore",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.searchInput",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.address.stateCitySelectorForCheckout.city",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.address.stateCitySelectorForCheckout.state",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.address.stateCitySelectorForCheckout.provinceCityDistrict",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.address.stateCitySelectorForCheckout.countryCode",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.fulfillment.pickupTab.pickup.storeLocator.address.stateCitySelectorForCheckout.district",
+            "value": "<已隐藏>"
+          }
+        ]
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.body.meta.page.metric.page",
+          "value": "<已隐藏>"
+        },
+        {
+          "path": "$.body.checkout.d.page",
+          "value": "PickupContact"
+        },
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.d.isVerified",
+          "value": false
+        },
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.d.isVerified",
+          "value": false
+        },
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.d.authRequired",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 344,
+      "har_index": 338,
+      "started": "2026-09-19T08:51:17.854Z",
+      "duration_ms": 752,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "contactVerify",
+          "_m": "checkout.pickupContact.selfPickupContact.selfContact.address"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "present",
+        "fields": [
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.emailAddress",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.fullDaytimePhone",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.lastName",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.firstName",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.verificationToken",
+            "value": ""
+          }
+        ]
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.d.isVerified",
+          "value": false
+        },
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.d.authRequired",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": 490,
+      "har_index": 340,
+      "started": "2026-09-19T08:52:00.934Z",
+      "duration_ms": 725,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "submitVerificationToken",
+          "_m": "checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "present",
+        "fields": [
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.verificationToken",
+            "value": "<已隐藏>"
+          }
+        ]
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.d.authRequired",
+          "value": false
+        },
+        {
+          "path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.d.isVerified",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": 504,
+      "har_index": 339,
+      "started": "2026-09-19T08:52:15.191Z",
+      "duration_ms": 864,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "continueFromPickupContactToBilling",
+          "_m": "checkout.pickupContact"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "present",
+        "fields": [
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.emailAddress",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.fullDaytimePhone",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.lastName",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.firstName",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.verificationToken",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.selfPickupContact.nationalIdSelf.nationalIdSelf",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.eFapiaoSelector.selectFapiao",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.pickupContact.eFapiaoSelector.ePersonalFapiao.invoiceHeader",
+            "value": ""
+          }
+        ]
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.body.meta.page.metric.page",
+          "value": "<已隐藏>"
+        },
+        {
+          "path": "$.body.checkout.d.page",
+          "value": "Billing"
+        },
+        {
+          "path": "$.body.checkout.billing.billingOptions.d.selectBillingOption",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "id": 514,
+      "har_index": 331,
+      "started": "2026-09-19T08:52:17.496Z",
+      "duration_ms": 8115,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx/billing",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "selectBillingOptionAction",
+          "_m": "checkout.billing.billingOptions"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "present",
+        "fields": [
+          {
+            "name": "checkout.billing.billingOptions.selectBillingOption",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.billing.billingOptions.bankLookUp.selectBank",
+            "value": ""
+          },
+          {
+            "name": "checkout.locationConsent.locationConsent",
+            "value": "<已隐藏>"
+          }
+        ]
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.body.checkout.d.page",
+          "value": "Review"
+        },
+        {
+          "path": "$.body.checkout.review.billingReview.alipayReview.d.alipayReview",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": 518,
+      "har_index": 330,
+      "started": "2026-09-19T08:52:19.571Z",
+      "duration_ms": 1146,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx/billing",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "continueFromBillingToReview",
+          "_m": "checkout.billing"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "present",
+        "fields": [
+          {
+            "name": "checkout.billing.billingOptions.selectBillingOption",
+            "value": "<已隐藏>"
+          },
+          {
+            "name": "checkout.billing.billingOptions.bankLookUp.selectBank",
+            "value": ""
+          }
+        ]
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.body.meta.page.metric.page",
+          "value": "<已隐藏>"
+        },
+        {
+          "path": "$.body.checkout.d.page",
+          "value": "Review"
+        },
+        {
+          "path": "$.body.checkout.review.billingReview.alipayReview.d.alipayReview",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": 536,
+      "har_index": 336,
+      "started": "2026-09-19T08:52:28.807Z",
+      "duration_ms": 7361,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx/review",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "continueFromReviewToProcess",
+          "_m": "checkout.review.placeOrder"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "empty",
+        "fields": []
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": []
+    },
+    {
+      "id": 541,
+      "har_index": 329,
+      "started": "2026-09-19T08:52:36.183Z",
+      "duration_ms": 674,
+      "method": "GET",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkout/status",
+        "query_names": [],
+        "actions": {}
+      },
+      "http_status": 200,
+      "body": {
+        "state": "empty",
+        "fields": []
+      },
+      "model_headers_present": [],
+      "response_body_exported": true,
+      "model_facts": [
+        {
+          "path": "$.meta.page.metric.page",
+          "value": "<已隐藏>"
+        }
+      ]
+    },
+    {
+      "id": 551,
+      "har_index": 337,
+      "started": "2026-09-19T08:52:39.384Z",
+      "duration_ms": 6273,
+      "method": "POST",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkoutx/statusX",
+        "query_names": [
+          "_a",
+          "_m"
+        ],
+        "actions": {
+          "_a": "checkStatus",
+          "_m": "spinner"
+        }
+      },
+      "http_status": 200,
+      "body": {
+        "state": "empty",
+        "fields": []
+      },
+      "model_headers_present": [
+        "x-aos-model-page",
+        "modelversion",
+        "syntax",
+        "x-aos-stk"
+      ],
+      "response_body_exported": true,
+      "model_facts": []
+    },
+    {
+      "id": 565,
+      "har_index": 327,
+      "started": "2026-09-19T08:52:45.666Z",
+      "duration_ms": 2750,
+      "method": "GET",
+      "endpoint": {
+        "host": "secure7.www.apple.com.cn",
+        "path": "/shop/checkout/interstitial",
+        "query_names": [],
+        "actions": {}
+      },
+      "http_status": 200,
+      "body": {
+        "state": "empty",
+        "fields": []
+      },
+      "model_headers_present": [],
+      "response_body_exported": true,
+      "model_facts": []
+    }
+  ],
+  "links": [
+    {
+      "source": 266,
+      "target": 504,
+      "evidence_path": "$.body.checkout.pickupContact.a.continueFromPickupContactToBilling.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 266,
+      "target": 344,
+      "evidence_path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.a.contactVerify.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 266,
+      "target": 490,
+      "evidence_path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.a.submitVerificationToken.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 344,
+      "target": 490,
+      "evidence_path": "$.body.checkout.pickupContact.selfPickupContact.selfContact.address.verificationModule.a.submitVerificationToken.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 504,
+      "target": 518,
+      "evidence_path": "$.body.checkout.billing.a.continueFromBillingToReview.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 504,
+      "target": 514,
+      "evidence_path": "$.body.checkout.billing.billingOptions.a.selectBillingOptionAction.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 514,
+      "target": 536,
+      "evidence_path": "$.body.checkout.review.placeOrder.a.continueFromReviewToProcess.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 518,
+      "target": 536,
+      "evidence_path": "$.body.checkout.review.placeOrder.a.continueFromReviewToProcess.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 536,
+      "target": 541,
+      "evidence_path": "$.head.data.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {}
+    },
+    {
+      "source": 541,
+      "target": 551,
+      "evidence_path": "$.spinner.a.checkStatus.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {
+        "x-aos-model-page": true,
+        "modelversion": true,
+        "syntax": true,
+        "x-aos-stk": true
+      }
+    },
+    {
+      "source": 551,
+      "target": 565,
+      "evidence_path": "$.head.data.url",
+      "kind": "response_url_exact_match_not_causality",
+      "header_equal": {}
+    }
+  ],
+  "search_hits": [
+    {
+      "id": 202,
+      "term_index": 0,
+      "location": "response.content.text"
+    },
+    {
+      "id": 266,
+      "term_index": 0,
+      "location": "response.content.text"
+    },
+    {
+      "id": 266,
+      "term_index": 1,
+      "location": "response.content.text"
+    },
+    {
+      "id": 344,
+      "term_index": 0,
+      "location": "request.url"
+    },
+    {
+      "id": 344,
+      "term_index": 1,
+      "location": "response.content.text"
+    },
+    {
+      "id": 490,
+      "term_index": 1,
+      "location": "request.url"
+    }
+  ],
+  "limits": [
+    "URL 相同或请求头一致不单独证明因果关系",
+    "仅分析配置的目标记录；搜索命中可用于下一轮扩展",
+    "缺少正文不等于空正文",
+    "未知值隐藏；原始数据仅在内存中读取"
+  ]
+}

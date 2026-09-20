@@ -64,7 +64,7 @@ CHROME_PATH = Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"
 
 
 @contextmanager
-def browser_session(playwright, product_url):
+def browser_session(playwright, product_url, *, include_page=False):
     """普通 Chrome 初始化；页面 Cookie 移交后，业务请求由 requests 直连。"""
     if not CHROME_PATH.is_file():
         raise ValueError("找不到 Chrome，请检查 CHROME_PATH")
@@ -118,6 +118,7 @@ def browser_session(playwright, product_url):
             if not fulfillment:
                 raise RuntimeError("未捕获页面履约请求")
             url = apple_url(product_url, fulfillment[-1].url)
+            initial_fulfillment_status = fulfillment[-1].status
             # 验证完成事件不足以证明会话可用，必须实际查询履约接口。
             with page.expect_response(lambda r: urlsplit(r.url).path == "/shop/fulfillment-messages") as pending:
                 result = page.evaluate("""async url => {
@@ -126,7 +127,11 @@ def browser_session(playwright, product_url):
                         business: response.status === 200 ? (await response.json()).head?.status : null};
                 }""", url)
             if result["http"] != 200 or str(result["business"]) != "200":
-                raise RuntimeError(f"浏览器履约查询未通过：HTTP {result['http']}；未加购")
+                raise RuntimeError(
+                    f"浏览器初始化失败：页面原始履约 HTTP {initial_fulfillment_status}，"
+                    f"验证后履约 HTTP {result['http']}，业务状态 {result['business']}；"
+                    "尚未交接 requests，未加购"
+                )
             headers = {k: v for k, v in pending.value.request.all_headers().items()
                        if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding")}
             with requests.Session() as session:
@@ -142,10 +147,12 @@ def browser_session(playwright, product_url):
                 session.headers.update({k: v for k, v in navigation.request.all_headers().items()
                     if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")})
                 print("浏览器与 Python 履约查询均成功，会话交接已验证。")
-                yield session
+                yield (session, page) if include_page else session
         finally:
             try:
                 if browser is not None:
+                    # connect_over_cdp 的 close 只断开连接，先退出本次独立进程。
+                    browser.new_browser_cdp_session().send("Browser.close")
                     browser.close()
             finally:
                 if process.poll() is None:
@@ -237,8 +244,12 @@ def request(session, method, url, *, headers=None, form=None):
         # requests 的原始异常可能包含带动态凭据的 URL，不直接打印。
         raise RuntimeError("请求失败或超时；未自动重试，需先确认服务端处理结果") from None
     if response.status_code == 541:
+        parsed = urlsplit(url)
+        # 只标识接口动作，不输出查询中的会话凭据或整个 URL。
+        action = dict(parse_qsl(parsed.query)).get("_a", "")
+        action_label = f"，动作 {action}" if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", action) else ""
         raise RuntimeError(
-            f"Apple 返回 HTTP 541，拒绝了 {method} {urlsplit(url).path}；"
+            f"requests 收到 HTTP 541：{method} {parsed.hostname}{parsed.path}{action_label}；"
             "已停止，未自动重试。Page Not Found 页面不能作为成功结果。"
         )
     if not 200 <= response.status_code < 400:
@@ -447,7 +458,14 @@ def continue_from_attach(session, page, sku):
         if isinstance(config, dict) and "buyFlowForm" in config:
             configs.append(config)
     if len(configs) != 1:
-        raise ValueError("加购响应没有唯一的配件页购买表单，不能确认下一步")
+        marker_count = len(re.findall(r"config:\s*\{", page.text))
+        raise ValueError(
+            "加购响应没有唯一的配件页购买表单："
+            f"HTTP={page.status_code}，路径={urlsplit(page.url).path}，"
+            f"配置标记数={marker_count}，"
+            f"buyFlowForm出现次数={page.text.count('buyFlowForm')}，"
+            f"可解析购买表单数={len(configs)}；不能确认下一步"
+        )
     config = configs[0]
     if require(config, "step") != "attach" or require(config, "part") != sku:
         raise ValueError("配件页阶段或商品与选配不一致")
