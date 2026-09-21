@@ -15,9 +15,9 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Error as BrowserError
 if __package__:
-    from .request_log import request_label, timing
+    from .request_log import request_label, timing, response_timing
 else:
-    from request_log import request_label, timing
+    from request_log import request_label, timing, response_timing
 
 
 # 本机使用 Reqable 抓包代理，显式信任其根证书，仍然校验 HTTPS 证书。
@@ -248,7 +248,7 @@ def request(session, method, url, *, headers=None, form=None):
                 method, url, headers=headers, data=form,
                 timeout=30, allow_redirects=False,
             )
-            log["status"] = response.status_code
+            response_timing(log, response)
     except requests.exceptions.SSLError:
         raise RuntimeError("HTTPS 证书校验失败；请检查 Reqable 根证书配置与当前代理") from None
     except requests.exceptions.ProxyError:

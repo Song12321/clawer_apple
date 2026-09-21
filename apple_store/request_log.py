@@ -40,7 +40,7 @@ def request_label(method, url):
 def timing(label):
     start = perf_counter()
     print(f"[{datetime.now():%H:%M:%S.%f}] 开始 | {label}", flush=True)
-    result = {}
+    result = {"started": start}
     try:
         yield result
     except BaseException as error:
@@ -48,4 +48,14 @@ def timing(label):
         raise
     else:
         status = f" | HTTP {result['status']}" if "status" in result else ""
+        if "headers_seconds" in result:
+            status += (f" | 响应头 {result['headers_seconds']:.3f}s"
+                       f" | 后续接收 {result['remaining_seconds']:.3f}s")
         print(f"[{datetime.now():%H:%M:%S.%f}] 完成 | {label}{status} | 耗时 {perf_counter()-start:.3f}s", flush=True)
+
+
+def response_timing(log, response):
+    received = perf_counter() - log["started"]
+    headers = response.elapsed.total_seconds()
+    log.update(status=response.status_code, headers_seconds=headers,
+               remaining_seconds=received - headers)

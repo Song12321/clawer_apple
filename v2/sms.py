@@ -2,7 +2,7 @@
 from urllib.parse import urlencode, urlsplit
 
 import requests
-from apple_store.request_log import request_label, timing
+from apple_store.request_log import request_label, timing, response_timing
 
 
 def verify(store_session, page_url, data, phone):
@@ -24,7 +24,7 @@ def verify(store_session, page_url, data, phone):
             try:
                 with timing(request_label(method, url)) as log:
                     response = identity.request(method, url, timeout=30, allow_redirects=False, **kwargs)
-                    log["status"] = response.status_code
+                    response_timing(log, response)
             except requests.RequestException:
                 raise RuntimeError("Identity request failed; no automatic retry") from None
             if response.status_code != 200:
