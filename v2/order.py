@@ -5,10 +5,10 @@ from copy import deepcopy
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 from playwright.sync_api import expect
-from sms import verify
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
+from sms import verify
 
 CONTACT = ("checkout", "pickupContact", "selfPickupContact", "selfContact", "address")
 STORE = ("checkout", "fulfillment", "pickupTab", "pickup", "storeLocator")
@@ -109,7 +109,8 @@ def checkout(session, browser, bag_page, config, sku):
     total = model["shoppingCart"]["summary"]["d"]["total"]
     page = base.checkout_bag(session, bag_page, model, item)
     model = base.read_model(page)
-    fields = guest_fields(session, browser, page, model)
+    with base.timing("浏览器生成访客表单及 deviceID"):
+        fields = guest_fields(session, browser, page, model)
     response = base.post_action(session, page.url, model, ("signIn", "guestLogin"), "guestLogin", fields)
     payload = base.parse_json(response.text)
     base.check_business_errors(payload)

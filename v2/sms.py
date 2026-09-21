@@ -2,6 +2,7 @@
 from urllib.parse import urlencode, urlsplit
 
 import requests
+from apple_store.request_log import request_label, timing
 
 
 def verify(store_session, page_url, data, phone):
@@ -21,7 +22,9 @@ def verify(store_session, page_url, data, phone):
 
         def send(method, url, **kwargs):
             try:
-                response = identity.request(method, url, timeout=30, allow_redirects=False, **kwargs)
+                with timing(request_label(method, url)) as log:
+                    response = identity.request(method, url, timeout=30, allow_redirects=False, **kwargs)
+                    log["status"] = response.status_code
             except requests.RequestException:
                 raise RuntimeError("Identity request failed; no automatic retry") from None
             if response.status_code != 200:
@@ -47,8 +50,9 @@ def verify(store_session, page_url, data, phone):
         generated = send("POST", service + "/verification/generate/phone", json=body)
         identity.headers["X-Apple-ID-Session-Id"] = generated.headers["X-Apple-ID-Session-Id"]
         print("短信已发送到配置的手机号。", flush=True)
-        print("请输入短信验证码（6 位数字），输入后回车继续：", end="", flush=True)
-        code = input().strip()
+        with timing("等待用户输入验证码（人工耗时）"):
+            print("请输入短信验证码（6 位数字），输入后回车继续：", end="", flush=True)
+            code = input().strip()
         if len(code) != 6 or not code.isascii() or not code.isdigit():
             raise ValueError("Verification code must contain six digits")
         validated = send("POST", service + "/verification/validate/phone",

@@ -14,6 +14,10 @@ from urllib.parse import urljoin, urlsplit, urlencode, parse_qsl, urlunsplit
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Error as BrowserError
+if __package__:
+    from .request_log import request_label, timing
+else:
+    from request_log import request_label, timing
 
 
 # 本机使用 Reqable 抓包代理，显式信任其根证书，仍然校验 HTTPS 证书。
@@ -66,6 +70,8 @@ CHROME_PATH = Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"
 @contextmanager
 def browser_session(playwright, product_url, *, include_page=False):
     """普通 Chrome 初始化；页面 Cookie 移交后，业务请求由 requests 直连。"""
+    initialization_started = time.perf_counter()
+    print("开始浏览器初始化与会话交接。", flush=True)
     if not CHROME_PATH.is_file():
         raise ValueError("找不到 Chrome，请检查 CHROME_PATH")
     with socket.socket() as listener:
@@ -146,7 +152,7 @@ def browser_session(playwright, product_url, *, include_page=False):
                 check_business_errors(parse_json(response.text))
                 session.headers.update({k: v for k, v in navigation.request.all_headers().items()
                     if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")})
-                print("浏览器与 Python 履约查询均成功，会话交接已验证。")
+                print(f"浏览器与 Python 履约查询均成功，会话交接已验证。初始化合计 {time.perf_counter() - initialization_started:.3f}s", flush=True)
                 if include_page:
                     product_page = requests.Response()
                     product_page.status_code = navigation.status
@@ -237,10 +243,12 @@ def request(session, method, url, *, headers=None, form=None):
     # 不自动重试或重定向：未知跳转不能被当作成功，创单也不能重复提交。
     url = apple_url("", url)
     try:
-        response = session.request(
-            method, url, headers=headers, data=form,
-            timeout=30, allow_redirects=False,
-        )
+        with timing(request_label(method, url)) as log:
+            response = session.request(
+                method, url, headers=headers, data=form,
+                timeout=30, allow_redirects=False,
+            )
+            log["status"] = response.status_code
     except requests.exceptions.SSLError:
         raise RuntimeError("HTTPS 证书校验失败；请检查 Reqable 根证书配置与当前代理") from None
     except requests.exceptions.ProxyError:
