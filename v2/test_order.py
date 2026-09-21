@@ -38,7 +38,8 @@ class CheckoutTests(unittest.TestCase):
         config.update({"数量": 1, "自提门店": "R645", "搜索地区": "北京 北京 朝阳区", "省": "北京", "市": "北京", "区": "朝阳区",
                        "证件后四位": self.form(504)["checkout.pickupContact.selfPickupContact.nationalIdSelf.nationalIdSelf"],
                        "发票类型": "e_personal_fdf", "支付方式": "ALIPAY"})
-        pending = iter([175, 189, 222, 228, 216, 266, 344, 490, 504, 514, 536])
+        config["自提门店名称"] = "Apple 朝阳大悦城"
+        pending = iter([175, 189, 222, 266, 344, 490, 504, 514, 536])
         self.calls = []
         def post(session, url, model, path, name, fields):
             identity = next(pending)
@@ -46,7 +47,7 @@ class CheckoutTests(unittest.TestCase):
             expected = self.form(identity) if identity != 536 else {}
             normalized = {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in fields.items()}
             self.assertTrue(set(expected) == set(normalized), f"{identity} 表单字段集合不同")
-            if identity in (490, 504, 514, 536):
+            if identity in (266, 490, 504, 514, 536):
                 self.assertTrue(expected == normalized, f"{identity} 表单值不一致（值不输出）")
             response = self.response(identity)
             if identity == 514 and change_total:
@@ -71,7 +72,7 @@ class CheckoutTests(unittest.TestCase):
 
     def test_serial_chain(self):
         self.assertEqual(self.run_chain()["订单号"], "TEST-ORDER")
-        self.assertEqual(self.calls, [175, 222, 228, 216, 266, 344, 490, 504, 514, 536])
+        self.assertEqual(self.calls, [175, 222, 266, 344, 490, 504, 514, 536])
 
     def test_review_mismatch_stops_before_submission(self):
         with self.assertRaisesRegex(ValueError, "金额"):

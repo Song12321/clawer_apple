@@ -132,22 +132,13 @@ def checkout(session, browser, bag_page, config, sku):
     locator = base.require(model, *STORE)
     prefix = ".".join(STORE)
     fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
-              prefix + ".selectStore": locator["d"]["selectStore"], prefix + ".searchInput": config["搜索地区"]}
+              prefix + ".selectStore": config["自提门店"], prefix + ".searchInput": config["搜索地区"]}
     address = {"city": config["市"], "state": config["省"], "district": config["区"],
                "provinceCityDistrict": config["市"] + " " + config["区"], "countryCode": "CN"}
     fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
-    action(STORE, "search", fields)
-    stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
-    selected = next(s for s in stores if s["storeId"] == config["自提门店"])
-    if selected["storeDisabled"]:
-        raise ValueError("目标门店不可取货")
-    store_name = selected["storeName"]
-    fields[prefix + ".selectStore"] = config["自提门店"]
-    action(STORE, "select", fields)
-    if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
-        raise ValueError("门店选择未生效")
     action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
-    if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != store_name:
+    base.require(model, "checkout", "pickupContact")
+    if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != config["自提门店名称"]:
         raise ValueError("自提摘要门店不一致")
     contact_model = deepcopy(model)
     contact_url = page.url
