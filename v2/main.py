@@ -11,8 +11,7 @@ def main():
     if len(CONFIG["证件后四位"]) != 4:
         raise ValueError("证件后四位必须为四个字符")
     with base.sync_playwright() as playwright:
-        with base.browser_session(playwright, CONFIG["商品页面"], include_page=True) as (session, browser):
-            page = base.request(session, "GET", CONFIG["商品页面"])
+        with base.browser_session(playwright, CONFIG["商品页面"], include_page=True) as (session, browser, page):
             product = base.select_product(page.content, CONFIG)
             bag = base.read_model(base.follow_navigation(session, base.request(session, "GET", base.apple_url(page.url, "/shop/bag"))))
             if any(k.startswith("item-") for k in bag["shoppingCart"]["items"]):

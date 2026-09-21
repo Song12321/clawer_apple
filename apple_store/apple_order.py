@@ -147,7 +147,16 @@ def browser_session(playwright, product_url, *, include_page=False):
                 session.headers.update({k: v for k, v in navigation.request.all_headers().items()
                     if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")})
                 print("浏览器与 Python 履约查询均成功，会话交接已验证。")
-                yield (session, page) if include_page else session
+                if include_page:
+                    product_page = requests.Response()
+                    product_page.status_code = navigation.status
+                    product_page.url = navigation.url
+                    product_page.headers.update(navigation.all_headers())
+                    product_page._content = navigation.body()
+                    product_page.encoding = "utf-8"
+                    yield session, page, product_page
+                else:
+                    yield session
         finally:
             try:
                 if browser is not None:
@@ -444,8 +453,8 @@ def add_to_bag(session, page, form):
     response = follow_navigation(session, response)
     # 新成功抓包进入 attach 配件页后，还需按页面表单“查看购物袋”。
     response = continue_from_attach(session, response, require(form, "product"))
-    # 加购响应本身不等于成功，必须从完整购物袋重新核对 SKU 和数量。
-    return follow_navigation(session, request(session, "GET", apple_url(page.url, "/shop/bag")))
+    # 配件页跳转已返回完整购物袋，调用方继续核对 SKU 和数量。
+    return response
 
 
 def continue_from_attach(session, page, sku):
