@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 from playwright.sync_api import expect
+from sms import verify
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
@@ -79,36 +80,6 @@ def guest_fields(session, page, response, model):
         return fields
     finally:
         page.unroute("**/*", intercept)
-
-
-def verify(session, page, page_url, data):
-    browser_cookies(session, page)
-
-    def document(route):
-        route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                      body='<!doctype html><div id="verification"></div>')
-
-    page.route(page_url, document)
-    try:
-        page.goto(page_url, wait_until="domcontentloaded")
-    finally:
-        page.unroute(page_url, document)
-    page.add_script_tag(url=data["jsLibrary"])
-    page.evaluate("""data => {
-        window.verificationResult = null;
-        AppleID.service.verify.init({...data, containerId: 'verification', callbacks: {
-            onComplete: ({data}) => {window.verificationResult = {token: data.token};},
-            onFail: () => {window.verificationResult = {error: true};},
-            onCancel: () => {window.verificationResult = {error: true};},
-            onSkipVerification: () => {window.verificationResult = {error: true};}
-        }});
-    }""", {k: data[k] for k in ("serviceURL", "serviceKey", "options")})
-    print("请在官网组件完成短信验证，最多等待 5 分钟。")
-    page.wait_for_function("window.verificationResult !== null", timeout=300000)
-    result = page.evaluate("window.verificationResult")
-    if not result.get("token"):
-        raise ValueError("官网组件未返回验证令牌")
-    return result["token"]
 
 
 def check_review(model, config, sku, total):
@@ -187,7 +158,7 @@ def checkout(session, browser, bag_page, config, sku):
     action(CONTACT, "contactVerify", fields)
     data = base.require(model, *CONTACT, "verificationModule", "d")
     if data["authRequired"]:
-        fields[token_key] = verify(session, browser, contact_url, data)
+        fields[token_key] = verify(session, contact_url, data, config["手机号"])
         action(CONTACT + ("verificationModule",), "submitVerificationToken", {token_key: fields[token_key]})
         data = base.require(model, *CONTACT, "verificationModule", "d")
     if not data["isVerified"] or data["authRequired"]:
