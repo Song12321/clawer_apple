@@ -31,7 +31,7 @@ class CheckoutTests(unittest.TestCase):
     def form(self, identity):
         return dict(parse_qsl(self.entries[identity]["request"]["postData"]["text"], keep_blank_values=True))
 
-    def run_chain(self, change_total=False):
+    def run_chain(self, change_total=False, billing_retry=False):
         prefix = "checkout.pickupContact.selfPickupContact.selfContact.address."
         contact = {field: self.form(504)[prefix + field] for field in ("lastName", "firstName", "fullDaytimePhone", "emailAddress")}
         config = {key: contact[field] for field, key in (("lastName", "姓"), ("firstName", "名"), ("fullDaytimePhone", "手机号"), ("emailAddress", "邮箱"))}
@@ -39,7 +39,10 @@ class CheckoutTests(unittest.TestCase):
                        "证件后四位": self.form(504)["checkout.pickupContact.selfPickupContact.nationalIdSelf.nationalIdSelf"],
                        "发票类型": "e_personal_fdf", "支付方式": "ALIPAY"})
         config["自提门店名称"] = "Apple 朝阳大悦城"
-        pending = iter([175, 189, 222, 228, 216, 266, 344, 490, 504, 514, 536])
+        if billing_retry:
+            pending = iter([175, 189, 222, 228, 266, 344, 490, 504, 518, 514, 518, 536])
+        else:
+            pending = iter([175, 189, 222, 228, 266, 344, 490, 504, 518, 536])
         self.calls = []
         def post(session, url, model, path, name, fields):
             identity = next(pending)
@@ -47,10 +50,12 @@ class CheckoutTests(unittest.TestCase):
             expected = self.form(identity) if identity != 536 else {}
             normalized = {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in fields.items()}
             self.assertTrue(set(expected) == set(normalized), f"{identity} 表单字段集合不同")
-            if identity in (490, 504, 514, 536):
+            if identity in (490, 504, 514, 518, 536):
                 self.assertTrue(expected == normalized, f"{identity} 表单值不一致（值不输出）")
             response = self.response(identity)
-            if identity == 514 and change_total:
+            if billing_retry and identity == 518 and self.calls.count(518) == 1:
+                response._content = self.response(504)._content  # 模拟首次 continue 未推进
+            if identity == 518 and change_total:
                 data = json.loads(response.text)
                 data["body"]["checkout"]["review"]["summary"]["d"]["total"] = "changed"
                 response._content = json.dumps(data).encode()
@@ -72,12 +77,16 @@ class CheckoutTests(unittest.TestCase):
 
     def test_serial_chain(self):
         self.assertEqual(self.run_chain()["订单号"], "TEST-ORDER")
-        self.assertEqual(self.calls, [175, 222, 228, 216, 266, 344, 490, 504, 514, 536])
+        self.assertEqual(self.calls, [175, 222, 228, 266, 344, 490, 504, 518, 536])
 
     def test_review_mismatch_stops_before_submission(self):
         with self.assertRaisesRegex(ValueError, "金额"):
             self.run_chain(change_total=True)
         self.assertNotIn(536, self.calls)
+
+    def test_billing_retry_when_continue_does_not_advance(self):
+        self.assertEqual(self.run_chain(billing_retry=True)["订单号"], "TEST-ORDER")
+        self.assertEqual(self.calls, [175, 222, 228, 266, 344, 490, 504, 518, 514, 518, 536])
 
 
 class QueryOrderTests(unittest.TestCase):

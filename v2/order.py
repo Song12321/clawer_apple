@@ -154,10 +154,9 @@ def checkout(session, browser, bag_page, config, sku):
     if selected.get("storeDisabled"):
         raise ValueError(f"目标门店不可取货（无现货库存或未开放预约）：{selected.get('storeName', config['自提门店'])}")
     store_name = selected["storeName"]
+    # 门店字段随 continueFromFulfillmentToPickupContact 一并提交即可完成绑定，
+    # 单独再发一次 select 只会多花约 10s；绑定结果仍由下方自提摘要校验兜底。
     fields[prefix + ".selectStore"] = config["自提门店"]
-    action(STORE, "select", fields)
-    if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
-        raise ValueError("门店选择未生效")
     action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
     base.require(model, "checkout", "pickupContact")
     if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != store_name:
@@ -186,10 +185,16 @@ def checkout(session, browser, bag_page, config, sku):
     payment = "checkout.billing.billingOptions."
     fields = {payment + "selectBillingOption": config["支付方式"], payment + "bankLookUp.selectBank":
               model["checkout"]["billing"]["billingOptions"]["bankLookUp"]["d"]["selectBank"]}
-    action(("checkout", "billing", "billingOptions"), "selectBillingOptionAction", {
-        **fields, "checkout.locationConsent.locationConsent": model["checkout"]["locationConsent"]["d"]["locationConsent"]})
-    if model["checkout"]["d"]["page"] == "Billing":
+    consent = model["checkout"]["locationConsent"]["d"]["locationConsent"]
+    # continueFromBillingToReview 绑定整个 billing 模块，请求体已含 selectBillingOption，
+    # 正常一次即可选中支付方式并进入确认页；未生效时才补发单选动作重试。
+    action(("checkout", "billing"), "continueFromBillingToReview", fields)
+    if model["checkout"]["d"]["page"] != "Review":
+        action(("checkout", "billing", "billingOptions"), "selectBillingOptionAction", {
+            **fields, "checkout.locationConsent.locationConsent": consent})
         action(("checkout", "billing"), "continueFromBillingToReview", fields)
+        if model["checkout"]["d"]["page"] != "Review":
+            raise ValueError("支付方式未生效，仍停留在支付页")
     check_review(model, config, sku, total)
     response = base.post_action(session, page.url, model, ("checkout", "review", "placeOrder"), "continueFromReviewToProcess", {})
     payload = base.parse_json(response.text)
