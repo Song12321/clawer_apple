@@ -20,6 +20,8 @@ def main():
             bag_page = base.add_to_bag(session, page, form)
             result = checkout(session, browser, bag_page, CONFIG, product["partNumber"])
             print("订单号：" + result["订单号"])
+            if "支付链接" in result:
+                print("支付链接：" + result["支付链接"])
             return result
 
 

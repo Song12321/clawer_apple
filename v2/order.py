@@ -132,13 +132,35 @@ def checkout(session, browser, bag_page, config, sku):
     locator = base.require(model, *STORE)
     prefix = ".".join(STORE)
     fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
-              prefix + ".selectStore": config["自提门店"], prefix + ".searchInput": config["搜索地区"]}
+              prefix + ".selectStore": locator["d"]["selectStore"], prefix + ".searchInput": config["搜索地区"]}
     address = {"city": config["市"], "state": config["省"], "district": config["区"],
                "provinceCityDistrict": config["市"] + " " + config["区"], "countryCode": "CN"}
     fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
+    action(STORE, "search", fields)
+    stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
+    print(f"--- 搜索地区【{config['搜索地区']}】返回 {len(stores)} 家直营门店状态 ---")
+    for s in stores:
+        sid = s.get("storeId", "")
+        sname = s.get("storeName", "")
+        disabled = s.get("storeDisabled", False)
+        avail = s.get("availability", {}).get("storeAvailability") or ("不可取货" if disabled else "可取货")
+        is_target = " [目标门店]" if sid == config["自提门店"] else ""
+        status_tag = "【不可取货】" if disabled else "【可自提】"
+        print(f"  {status_tag} {sid} {sname} - {avail}{is_target}")
+    print("---------------------------------------------------------")
+    selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
+    if not selected:
+        raise ValueError(f"目标门店不在搜索结果中：{config['自提门店']}")
+    if selected.get("storeDisabled"):
+        raise ValueError(f"目标门店不可取货（无现货库存或未开放预约）：{selected.get('storeName', config['自提门店'])}")
+    store_name = selected["storeName"]
+    fields[prefix + ".selectStore"] = config["自提门店"]
+    action(STORE, "select", fields)
+    if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
+        raise ValueError("门店选择未生效")
     action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
     base.require(model, "checkout", "pickupContact")
-    if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != config["自提门店名称"]:
+    if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != store_name:
         raise ValueError("自提摘要门店不一致")
     contact_model = deepcopy(model)
     contact_url = page.url

@@ -26,6 +26,16 @@ REQABLE_CA = Path.home() / "AppData/Roaming/Reqable/certificate/reqable-root.crt
 REQABLE_PROXY = "http://127.0.0.1:9000"
 
 
+def is_reqable_available():
+    if not REQABLE_CA.is_file():
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", 9000), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
 def copy_browser_cookies(session, cookies):
     """保留浏览器 Cookie 的实际作用域和有效期，不输出或落盘凭据。"""
     session.cookies.clear()
@@ -77,11 +87,12 @@ def browser_session(playwright, product_url, *, include_page=False):
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
+    proxy_arg = f"--proxy-server={REQABLE_PROXY}" if is_reqable_available() else "--no-proxy-server"
     with tempfile.TemporaryDirectory(prefix="apple-session-") as profile:
         process = subprocess.Popen([
             str(CHROME_PATH), f"--user-data-dir={profile}",
             f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
-            "--no-proxy-server", "--no-first-run", "--no-default-browser-check",
+            proxy_arg, "--no-first-run", "--no-default-browser-check",
             "--incognito", "about:blank",
         ], creationflags=subprocess.CREATE_NO_WINDOW,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -142,6 +153,10 @@ def browser_session(playwright, product_url, *, include_page=False):
                        if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding")}
             with requests.Session() as session:
                 session.trust_env = False
+                if is_reqable_available():
+                    session.proxies = {"http": REQABLE_PROXY, "https": REQABLE_PROXY}
+                    session.verify = str(REQABLE_CA)
+                    print("检测到 Reqable 运行中，请求已通过 127.0.0.1:9000 代理转发至 Reqable 抓包。", flush=True)
                 copy_browser_cookies(session, read_page_cookies(page, [url]))
                 session.headers["User-Agent"] = headers["user-agent"]
                 if "accept-language" in headers:
@@ -556,36 +571,103 @@ def read_order(model):
     number = require(data, "orderNumber")
     if not isinstance(number, str) or not number.strip():
         raise ValueError("结果页没有有效订单号")
-    return {
+    order_info = {
         "订单号": number,
         "订单链接": apple_url("", require(data, "orderStatusUrl")),
     }
+    if "externalUrl" in data and isinstance(data["externalUrl"], str) and data["externalUrl"].strip():
+        order_info["支付链接"] = data["externalUrl"]
+    return order_info
 
 
-def query_order(session, status_url):
-    """使用当前结账会话查询结果；不负责创建订单或恢复历史 Cookie。"""
-    page = request(session, "GET", status_url)
-    model = read_model(page)
-    action_url = apple_url(page.url, require(model, "spinner", "a", "checkStatus", "url"))
-    headers = model_headers(model)
-    parsed = urlsplit(page.url)
-    headers.update({
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "Fetch",
-        "Origin": f"{parsed.scheme}://{parsed.netloc}",
-        "Referer": page.url,
-    })
-    # 本样本只确认一次空体 POST 后返回结果页，不添加猜测性的轮询。
-    response = request(session, "POST", action_url, headers=headers)
-    payload = parse_json(response.text)
-    check_business_errors(payload)
-    status = require(payload, "head", "status")
-    if type(status) not in (str, int) or status not in (302, "302"):
-        raise ValueError("状态检查未返回已确认的结果页跳转；停止，不重复提交订单")
-    result_url = apple_url(response.url, require(payload, "head", "data", "url"))
-    if urlsplit(result_url).path != "/shop/checkout/interstitial":
-        raise ValueError("状态检查跳转到其他页面，尚未取得订单结果")
-    return read_order(read_model(request(session, "GET", result_url)))
+def extract_checkout_errors(model, html_text=""):
+    messages = []
+    def visit(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("m"), list):
+                for m in node["m"]:
+                    if isinstance(m, dict) and m.get("level") in ("ERROR", "FATAL"):
+                        text = m.get("text") or m.get("message")
+                        if text and text not in messages:
+                            messages.append(str(text))
+            for key, val in node.items():
+                if key in ("messages", "globalMessages", "errors") and isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, dict):
+                            text = item.get("message") or item.get("text") or item.get("description")
+                            if text and text not in messages:
+                                messages.append(str(text))
+                        elif isinstance(item, str) and item and item not in messages:
+                            messages.append(item)
+                visit(val)
+        elif isinstance(node, list):
+            for x in node:
+                visit(x)
+
+    if isinstance(model, dict):
+        visit(model)
+    if not messages and html_text:
+        soup = BeautifulSoup(html_text, "html.parser")
+        selectors = [
+            ".as-banner-message", ".as-notification-content", ".as-notification-message",
+            "[role='alert']", ".form-message-error", ".as-errormessage"
+        ]
+        for sel in selectors:
+            for el in soup.select(sel):
+                text = el.get_text(strip=True)
+                if text and text not in messages:
+                    messages.append(text)
+    return messages
+
+
+def query_order(session, status_url, max_attempts=30, interval=1.0):
+    """使用当前结账会话查询结果；支持处理中状态轮询，不负责创建订单或恢复历史 Cookie。"""
+    current_url = status_url
+    for attempt in range(1, max_attempts + 1):
+        page = request(session, "GET", current_url)
+        model = read_model(page)
+        action_url = apple_url(page.url, require(model, "spinner", "a", "checkStatus", "url"))
+        headers = model_headers(model)
+        parsed = urlsplit(page.url)
+        headers.update({
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "Fetch",
+            "Origin": f"{parsed.scheme}://{parsed.netloc}",
+            "Referer": page.url,
+        })
+        response = request(session, "POST", action_url, headers=headers)
+        payload = parse_json(response.text)
+        check_business_errors(payload)
+        status = require(payload, "head", "status")
+        if type(status) not in (str, int) or status not in (302, "302"):
+            raise ValueError(f"状态检查未返回已确认的结果页跳转（status={status}）；停止，不重复提交订单")
+        result_url = apple_url(response.url, require(payload, "head", "data", "url"))
+        result_path = urlsplit(result_url).path
+        if result_path == "/shop/checkout/interstitial":
+            return read_order(read_model(request(session, "GET", result_url)))
+        if result_path == "/shop/checkout/status":
+            if attempt < max_attempts:
+                time.sleep(interval)
+                current_url = result_url
+                continue
+            raise RuntimeError(f"订单处理状态查询超时（已尝试 {max_attempts} 次仍处于处理中），请核对手机短信或邮箱确认")
+        err_reasons = []
+        try:
+            err_page = request(session, "GET", result_url)
+            err_model = None
+            try:
+                err_model = read_model(err_page)
+            except Exception:
+                pass
+            err_reasons = extract_checkout_errors(err_model, err_page.text)
+        except Exception:
+            pass
+        if err_reasons:
+            raise ValueError(f"订单被 Apple 拒绝并跳转至 {result_path}：{'；'.join(err_reasons)}")
+        if result_path == "/shop/checkout":
+            raise ValueError(f"订单被 Apple 拒绝并退回结账页（{result_path}），未取得订单结果（常见原因：所选门店该机型无现货库存、当前无可用自提时段或联系人与证件不符）")
+        raise ValueError(f"状态检查跳转到未预期页面（{result_path}），尚未取得订单结果")
+    raise RuntimeError("订单处理状态查询超时，尚未取得订单结果")
 
 
 def main():
