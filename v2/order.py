@@ -245,13 +245,13 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
             raise RuntimeError("用户已停止缺货轮询；未提交订单")
 
     if base.pickup_unavailable(model):
-        print(f"[{name}] 当前默认地区无货；继续按配置地区搜索。", flush=True)
+        print(f"[{name}] 当前默认地区无货；先按配置地区搜索。", flush=True)
     while True:
         check_stopped()
         attempt += 1
         locator = base.require(model, *STORE)
         fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
-                  prefix + ".selectStore": locator["d"]["selectStore"], prefix + ".searchInput": config["搜索地区"]}
+                  prefix + ".selectStore": config["自提门店"], prefix + ".searchInput": config["搜索地区"]}
         fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
         action(STORE, "search", fields)
         if base.pickup_unavailable(model):
@@ -260,7 +260,7 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
         stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
         selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
         if selected is None:
-            raise ValueError(f"目标门店不在搜索结果中：{config['自提门店']}；不按缺货重试")
+            raise ValueError(f"搜索响应未包含目标门店：{config['自提门店']}；不按缺货重试")
         disabled = base.require(selected, "storeDisabled")
         if type(disabled) is not bool:
             raise ValueError("门店库存状态不是布尔值；停止")
@@ -268,8 +268,7 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
             wait_stock("当前不可取货")
             continue
         store_name = base.require(selected, "storeName")
-        print(f"[{name}] 第 {attempt} 次查询：{store_name} 可取货，开始选店结账。", flush=True)
-        fields[prefix + ".selectStore"] = config["自提门店"]
+        print(f"[{name}] 第 {attempt} 次查询：{store_name} 可取货，继续结账。", flush=True)
         action(STORE, "select", fields)
         if base.pickup_unavailable(model):
             wait_stock("选店时已无货")
