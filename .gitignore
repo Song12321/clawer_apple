@@ -6,3 +6,8 @@ test-results/
 .venv/
 __pycache__/
 *.pyc
+# 固定浏览器资料目录内含登录 Cookie，不得提交
+v2/chrome-profile/
+v2/profiles/
+# 每账号运行结果
+v2/results.jsonl

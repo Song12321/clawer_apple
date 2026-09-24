@@ -6,7 +6,7 @@ import time
 import socket
 import subprocess
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from http.cookiejar import Cookie
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlencode, parse_qsl, urlunsplit
@@ -78,22 +78,129 @@ CHROME_PATH = Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"
 
 
 @contextmanager
-def browser_session(playwright, product_url, *, include_page=False):
-    """普通 Chrome 初始化；页面 Cookie 移交后，业务请求由 requests 直连。"""
+def _handoff(page, product_url, *, include_page=False, capture_proxy=False):
+    """在已打开的页面上完成官网校验、履约实测与 Cookie/请求头交接。
+
+    本函数不打开也不关闭浏览器：浏览器来自本次启动还是常驻会话由调用方决定。
+    """
     initialization_started = time.perf_counter()
+    page.add_init_script("""
+        window.addEventListener('shldDone', event => {
+            window.__appleVerificationEvent = event.detail.id;
+        });
+    """)
+    fulfillment = []
+    def observe(response):
+        if urlsplit(response.url).path == "/shop/fulfillment-messages":
+            fulfillment.append(response)
+    page.on("response", observe)
+    navigation = page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+    if navigation is None or navigation.status != 200:
+        raise RuntimeError("浏览器商品页未返回 HTTP 200")
+    page.wait_for_function("window.__appleVerificationEvent !== undefined", timeout=30000)
+    if page.evaluate("window.__appleVerificationEvent") != "shld-result":
+        raise RuntimeError("官网浏览器验证未通过")
+    deadline = time.monotonic() + 20
+    while not fulfillment and time.monotonic() < deadline:
+        page.wait_for_timeout(250)
+    if not fulfillment:
+        raise RuntimeError("未捕获页面履约请求")
+    url = apple_url(product_url, fulfillment[-1].url)
+    initial_fulfillment_status = fulfillment[-1].status
+    # 验证完成事件不足以证明会话可用，必须实际查询履约接口。
+    with page.expect_response(lambda r: urlsplit(r.url).path == "/shop/fulfillment-messages") as pending:
+        result = page.evaluate("""async url => {
+            const response = await fetch(url);
+            return {http: response.status,
+                business: response.status === 200 ? (await response.json()).head?.status : null};
+        }""", url)
+    if result["http"] != 200 or str(result["business"]) != "200":
+        raise RuntimeError(
+            f"浏览器初始化失败：页面原始履约 HTTP {initial_fulfillment_status}，"
+            f"验证后履约 HTTP {result['http']}，业务状态 {result['business']}；"
+            "尚未交接 requests，未加购"
+        )
+    headers = {k: v for k, v in pending.value.request.all_headers().items()
+               if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding")}
+    with requests.Session() as session:
+        session.trust_env = False
+        if capture_proxy:
+            if not is_reqable_available():
+                raise RuntimeError("配置要求经 Reqable 抓包，但 127.0.0.1:9000 未监听")
+            session.proxies = {"http": REQABLE_PROXY, "https": REQABLE_PROXY}
+            session.verify = str(REQABLE_CA)
+            print("Python 请求经 Reqable 抓包代理转发（配置：使用抓包代理）。", flush=True)
+        else:
+            print("Python 请求直连，未经 Reqable 代理；需要抓包时把配置「使用抓包代理」设为 True。", flush=True)
+        copy_browser_cookies(session, read_page_cookies(page, [url]))
+        session.headers["User-Agent"] = headers["user-agent"]
+        if "accept-language" in headers:
+            session.headers["Accept-Language"] = headers["accept-language"]
+        response = request(session, "GET", url, headers=headers)
+        if str(require(parse_json(response.text), "head", "status")) != "200":
+            raise RuntimeError("Python 履约查询业务失败；未加购")
+        check_business_errors(parse_json(response.text))
+        session.headers.update({k: v for k, v in navigation.request.all_headers().items()
+            if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")})
+        print(f"浏览器与 Python 履约查询均成功，会话交接已验证。会话交接合计 {time.perf_counter() - initialization_started:.3f}s", flush=True)
+        if include_page:
+            product_page = requests.Response()
+            product_page.status_code = navigation.status
+            product_page.url = navigation.url
+            product_page.headers.update(navigation.all_headers())
+            product_page._content = navigation.body()
+            product_page.encoding = "utf-8"
+            yield session, page, product_page
+        else:
+            yield session
+
+
+def live_page(browser):
+    """取常驻浏览器的可用页面；没有页面时明确报错，不自己新建上下文。"""
+    contexts = browser.contexts
+    if not contexts or not contexts[0].pages:
+        raise RuntimeError("常驻浏览器没有打开的页面；请重启 v2/session.py")
+    return contexts[0].pages[0]
+
+
+@contextmanager
+def browser_session(playwright, product_url, *, include_page=False, profile_dir=None, cdp_endpoint=None,
+                    capture_proxy=False):
+    """打开或连接浏览器并完成会话交接；业务请求一律由 requests 直连。
+
+    cdp_endpoint 给定时连接常驻浏览器（v2/session.py），既不启动也不关闭它；
+    profile_dir 给定时使用固定资料目录且不加 --incognito，登录态在目录内保留；
+    两者都不给时保持原来的临时目录加隐身模式。
+    """
     print("开始浏览器初始化与会话交接。", flush=True)
+    if cdp_endpoint is not None:
+        browser = playwright.chromium.connect_over_cdp(cdp_endpoint)
+        print(f"已连接常驻浏览器会话：{cdp_endpoint}", flush=True)
+        with _handoff(live_page(browser), product_url, include_page=include_page, capture_proxy=capture_proxy) as result:
+            yield result
+        return
     if not CHROME_PATH.is_file():
         raise ValueError("找不到 Chrome，请检查 CHROME_PATH")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    proxy_arg = f"--proxy-server={REQABLE_PROXY}" if is_reqable_available() else "--no-proxy-server"
-    with tempfile.TemporaryDirectory(prefix="apple-session-") as profile:
+    # 浏览器一律直连：实测浏览器把导航交给 Reqable 代理时会卡在 about:blank 直到超时
+    # （同一资料目录改直连后商品页 1.3s 加载完成）。抓包仍由下面的 requests 会话走 Reqable 完成。
+    proxy_arg = "--no-proxy-server"
+    with ExitStack() as resources:
+        if profile_dir is None:
+            profile = resources.enter_context(tempfile.TemporaryDirectory(prefix="apple-session-"))
+            incognito_args = ["--incognito"]
+        else:
+            profile = str(Path(profile_dir).resolve())
+            Path(profile).mkdir(parents=True, exist_ok=True)
+            incognito_args = []
+            print(f"使用固定浏览器资料目录：{profile}（登录态保存在目录内，不要提交到版本库）", flush=True)
         process = subprocess.Popen([
             str(CHROME_PATH), f"--user-data-dir={profile}",
             f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
             proxy_arg, "--no-first-run", "--no-default-browser-check",
-            "--incognito", "about:blank",
+            *incognito_args, "about:blank",
         ], creationflags=subprocess.CREATE_NO_WINDOW,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         browser = None
@@ -112,72 +219,9 @@ def browser_session(playwright, product_url, *, include_page=False):
                             raise RuntimeError("Chrome 调试连接启动失败") from None
                         time.sleep(0.25)
             browser = playwright.chromium.connect_over_cdp(endpoint)
-            page = browser.contexts[0].pages[0]
-            page.add_init_script("""
-                window.addEventListener('shldDone', event => {
-                    window.__appleVerificationEvent = event.detail.id;
-                });
-            """)
-            fulfillment = []
-            def observe(response):
-                if urlsplit(response.url).path == "/shop/fulfillment-messages":
-                    fulfillment.append(response)
-            page.on("response", observe)
-            navigation = page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
-            if navigation is None or navigation.status != 200:
-                raise RuntimeError("浏览器商品页未返回 HTTP 200")
-            page.wait_for_function("window.__appleVerificationEvent !== undefined", timeout=30000)
-            if page.evaluate("window.__appleVerificationEvent") != "shld-result":
-                raise RuntimeError("官网浏览器验证未通过")
-            deadline = time.monotonic() + 20
-            while not fulfillment and time.monotonic() < deadline:
-                page.wait_for_timeout(250)
-            if not fulfillment:
-                raise RuntimeError("未捕获页面履约请求")
-            url = apple_url(product_url, fulfillment[-1].url)
-            initial_fulfillment_status = fulfillment[-1].status
-            # 验证完成事件不足以证明会话可用，必须实际查询履约接口。
-            with page.expect_response(lambda r: urlsplit(r.url).path == "/shop/fulfillment-messages") as pending:
-                result = page.evaluate("""async url => {
-                    const response = await fetch(url);
-                    return {http: response.status,
-                        business: response.status === 200 ? (await response.json()).head?.status : null};
-                }""", url)
-            if result["http"] != 200 or str(result["business"]) != "200":
-                raise RuntimeError(
-                    f"浏览器初始化失败：页面原始履约 HTTP {initial_fulfillment_status}，"
-                    f"验证后履约 HTTP {result['http']}，业务状态 {result['business']}；"
-                    "尚未交接 requests，未加购"
-                )
-            headers = {k: v for k, v in pending.value.request.all_headers().items()
-                       if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding")}
-            with requests.Session() as session:
-                session.trust_env = False
-                if is_reqable_available():
-                    session.proxies = {"http": REQABLE_PROXY, "https": REQABLE_PROXY}
-                    session.verify = str(REQABLE_CA)
-                    print("检测到 Reqable 运行中，请求已通过 127.0.0.1:9000 代理转发至 Reqable 抓包。", flush=True)
-                copy_browser_cookies(session, read_page_cookies(page, [url]))
-                session.headers["User-Agent"] = headers["user-agent"]
-                if "accept-language" in headers:
-                    session.headers["Accept-Language"] = headers["accept-language"]
-                response = request(session, "GET", url, headers=headers)
-                if str(require(parse_json(response.text), "head", "status")) != "200":
-                    raise RuntimeError("Python 履约查询业务失败；未加购")
-                check_business_errors(parse_json(response.text))
-                session.headers.update({k: v for k, v in navigation.request.all_headers().items()
-                    if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")})
-                print(f"浏览器与 Python 履约查询均成功，会话交接已验证。初始化合计 {time.perf_counter() - initialization_started:.3f}s", flush=True)
-                if include_page:
-                    product_page = requests.Response()
-                    product_page.status_code = navigation.status
-                    product_page.url = navigation.url
-                    product_page.headers.update(navigation.all_headers())
-                    product_page._content = navigation.body()
-                    product_page.encoding = "utf-8"
-                    yield session, page, product_page
-                else:
-                    yield session
+            with _handoff(browser.contexts[0].pages[0], product_url, include_page=include_page,
+                          capture_proxy=capture_proxy) as result:
+                yield result
         finally:
             try:
                 if browser is not None:
@@ -188,7 +232,7 @@ def browser_session(playwright, product_url, *, include_page=False):
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=10)
-                # 等待 Chrome 释放临时目录，由 TemporaryDirectory 清理本次目录。
+                # 等待 Chrome 释放资料目录；临时目录由 TemporaryDirectory 清理，固定目录保留。
                 time.sleep(1)
 
 # 用户配置集中在这里；不保存 Cookie、验证码或历史会话令牌。
@@ -321,11 +365,13 @@ def follow_navigation(session, response):
     raise ValueError("页面跳转次数超过限制")
 
 
-def post_action(session, page_url, model, module_path, action_name, form):
+def post_action(session, page_url, model, module_path, action_name, form, *, extra_headers=None):
     # checkout.js/createAjax/fetchOrbit 确认模型动作统一使用 POST 表单。
     module = require(model, *module_path)
     url = apple_url(page_url, require(module, "a", action_name, "url"))
     headers = model_headers(model)
+    if extra_headers:
+        headers.update(extra_headers)
     origin = urlsplit(page_url)
     headers.update({
         "Content-Type": "application/x-www-form-urlencoded",
@@ -353,13 +399,35 @@ def parse_json(text):
 
 def check_business_errors(model):
     # 抓包中业务状态 200 仍可能携带模块 m 中的 ERROR。
-    # 只报告字段位置，不回显服务端可能包含个人信息的错误文本。
+    # 诊断时只输出字段名、少量错误标识和脱敏后的错误文本，不回显原始响应。
+    def safe_text(value):
+        if not isinstance(value, (str, int, bool)):
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<邮箱已脱敏>", text)
+        text = re.sub(r"(?<!\d)1\d{10}(?!\d)", "<手机号已脱敏>", text)
+        text = re.sub(r"(?<!\d)\d{17}[0-9Xx](?!\d)", "<证件号已脱敏>", text)
+        text = re.sub(r"(?i)\b[A-Za-z0-9_-]{32,}\b", "<长标识已脱敏>", text)
+        return text[:200] + ("…" if len(text) > 200 else "")
+
     def visit(node, path):
         if isinstance(node, dict):
             if isinstance(node.get("m"), list):
                 for message in node["m"]:
                     if isinstance(message, dict) and message.get("level") == "ERROR":
-                        raise ValueError(f"业务字段校验失败：{path or '根节点'}")
+                        details = ["字段=" + ",".join(sorted(str(key) for key in message))]
+                        for key in ("code", "errorCode", "type"):
+                            value = safe_text(message.get(key))
+                            if value is not None:
+                                details.append(f"{key}={value}")
+                        for key in ("text", "message", "description", "title"):
+                            value = safe_text(message.get(key))
+                            if value is not None:
+                                details.append(f"{key}={value}")
+                                break
+                        raise ValueError(f"业务字段校验失败：{path or '根节点'}；" + "；".join(details))
             for key, value in node.items():
                 visit(value, f"{path}/{key}")
         elif isinstance(node, list):
@@ -563,6 +631,12 @@ def model_headers(model):
         if not isinstance(value, str) or not value:
             raise ValueError(f"模型请求头无效：{name}")
         headers[name] = value
+    # 登录态结账的 Billing/Review 模型会额外下发 x-as-actk；访客态模型没有该头。
+    action_key = source.get("x-as-actk")
+    if action_key is not None:
+        if not isinstance(action_key, str) or not action_key:
+            raise ValueError("模型请求头无效：x-as-actk")
+        headers["x-as-actk"] = action_key
     return headers
 
 

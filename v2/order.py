@@ -82,6 +82,52 @@ def guest_fields(session, page, response, model):
         page.unroute("**/*", intercept)
 
 
+def guest_login(session, browser, page, model):
+    """访客态入口：浏览器生成含 deviceID 的表单，再按模型声明的 POST+args 初始化结账。"""
+    with base.timing("浏览器生成访客表单及 deviceID"):
+        fields = guest_fields(session, browser, page, model)
+    response = base.post_action(session, page.url, model, ("signIn", "guestLogin"), "guestLogin", fields)
+    payload = base.parse_json(response.text)
+    base.check_business_errors(payload)
+    redirect = payload["head"]["data"]
+    if payload["head"]["status"] not in (302, "302") or redirect["method"].lower() != "post":
+        raise ValueError("访客响应未声明 POST 初始化")
+    return base.follow_navigation(session, base.request(
+        session, "POST", base.apple_url(response.url, redirect["url"]),
+        headers={"Referer": page.url}, form=redirect["args"]))
+
+
+def check_existing_bag(model, config, sku):
+    """购物袋为空返回 False；刚好只有配置的同一件商品返回 True；其它情况停止。
+
+    商品以 SKU 判定：本流程的 SKU 由选品阶段的机型、颜色、容量决定，SKU 相同即三者相同。
+    """
+    items = base.require(model, "shoppingCart", "items")
+    if not any(key.startswith("item-") for key in items):
+        return False
+    try:
+        base.check_bag(model, sku, config["数量"])
+    except ValueError as error:
+        raise ValueError(f"{error}；请先清空购物袋再重跑") from None
+    return True
+
+
+def bag_page_for_checkout(session, page, config, product):
+    """读取购物袋并按需加购，返回结账要用的购物袋响应。
+
+    空袋按原流程加购；袋里刚好只有配置的同一件商品时跳过加购直接结账；
+    其它情况一律停止，既不自动清空购物袋，也不追加商品。
+    """
+    sku = base.require(product, "partNumber")
+    bag_page = base.follow_navigation(session, base.request(
+        session, "GET", base.apple_url(page.url, "/shop/bag")))
+    if check_existing_bag(base.read_model(bag_page), config, sku):
+        print("购物袋里只有本配置的同一件商品，跳过加购。", flush=True)
+        return bag_page
+    _, form = base.fetch_summary(session, page, product)
+    return base.add_to_bag(session, page, form)
+
+
 def check_review(model, config, sku, total):
     review = model["checkout"]["review"]
     rows = [row for key, group in review["fulfillmentReview"].items() if key.startswith("reviewGroup-")
@@ -92,39 +138,79 @@ def check_review(model, config, sku, total):
     for field, key in (("lastName", "姓"), ("firstName", "名")):
         if contact[field] != config[key]:
             raise ValueError("Review 联系人不一致")
-    # 本次 Review 对手机固定显示八个圆点及后四位，邮箱隐藏本地部分中间字符。
-    local, domain = config["邮箱"].split("@")
-    masked_email = local[0] + "•" * (len(local) - 2) + local[-1] + "@" + domain
-    if contact["fullDaytimePhone"] != "•" * 8 + config["手机号"][-4:] or contact["emailAddress"] != masked_email:
-        raise ValueError("Review 脱敏联系方式不一致")
+    # Review 对手机固定显示八个圆点及后四位；邮箱字段只在访客态 Review 出现。
+    if contact["fullDaytimePhone"] != "•" * 8 + config["手机号"][-4:]:
+        raise ValueError("Review 脱敏手机号不一致")
+    if "emailAddress" in contact:
+        local, domain = config["邮箱"].split("@")
+        masked_email = local[0] + "•" * (len(local) - 2) + local[-1] + "@" + domain
+        if contact["emailAddress"] != masked_email:
+            raise ValueError("Review 脱敏邮箱不一致")
     if review["summary"]["d"]["total"] != total or review["billingReview"]["alipayReview"]["d"]["alipayReview"] is not True:
         raise ValueError("Review 金额或支付方式不一致")
     if review["placeOrder"]["d"]["enableContinue"] is not True:
         raise ValueError("Review 不允许提交")
 
 
-def checkout(session, browser, bag_page, config, sku):
+def check_prepared_checkout(model, sku, total):
+    """校验当前结账商品与刚读取并验证数量的购物袋一致。"""
+    fulfillment = base.require(model, "checkout", "fulfillment")
+    location = base.require(fulfillment, "fulfillmentOptions", "d", "selectFulfillmentLocation")
+    if location == "RETAIL":
+        items = base.require(fulfillment, "pickupTab", "pickup", "items")
+        rows = [value for key, value in items.items() if key.startswith("item-")]
+    elif location == "HOME":
+        groups = base.require(fulfillment, "deliveryTab", "delivery", "shipmentGroups")
+        rows = []
+        for key, group in groups.items():
+            if key.startswith("shipmentGroup-"):
+                for key, options in base.require(group, "shipmentOptionsGroups").items():
+                    if key.startswith("shipmentOptionsGroup-"):
+                        rows.extend(value for key, value in base.require(options, "items").items()
+                                    if key.startswith("item-"))
+    else:
+        raise ValueError("已准备结账的履约方式未知")
+    if len(rows) != 1 or base.require(rows[0], "d", "sku") != sku:
+        raise ValueError("已准备结账的商品与配置不一致")
+    # 当前 HAR 的 Fulfillment 项没有 quantity；单件通过已验证购物袋及单价/总价一致校验。
+    if base.require(rows[0], "d", "unitPrice") != base.require(rows[0], "d", "totalPrice"):
+        raise ValueError("已准备结账的商品不是单件金额")
+    if base.require(model, "checkout", "companionBar", "orderSummary", "d", "total") != total:
+        raise ValueError("已准备结账的金额与购物袋不一致")
+
+
+def checkout(session, browser, bag_page, config, sku, *, prepared=None):
     model = base.read_model(bag_page)
     item = base.check_bag(model, sku, config["数量"])
     total = model["shoppingCart"]["summary"]["d"]["total"]
-    page = base.checkout_bag(session, bag_page, model, item)
+    page = prepared if prepared is not None else base.checkout_bag(session, bag_page, model, item)
     model = base.read_model(page)
-    with base.timing("浏览器生成访客表单及 deviceID"):
-        fields = guest_fields(session, browser, page, model)
-    response = base.post_action(session, page.url, model, ("signIn", "guestLogin"), "guestLogin", fields)
-    payload = base.parse_json(response.text)
-    base.check_business_errors(payload)
-    redirect = payload["head"]["data"]
-    if payload["head"]["status"] not in (302, "302") or redirect["method"].lower() != "post":
-        raise ValueError("访客响应未声明 POST 初始化")
-    page = base.follow_navigation(session, base.request(session, "POST", base.apple_url(response.url, redirect["url"]),
-        headers={"Referer": page.url}, form=redirect["args"]))
-    model = base.read_model(page)
+    if "guestLogin" in model.get("signIn", {}):
+        if prepared is not None or not config["允许访客结账"]:
+            # 无人值守流程：登录态缺失直接停止，不等待人工登录、也不回退访客表单。
+            raise ValueError(
+                "结账入口被送到登录页：商城要求结账前重新验证一次 Apple ID 登录"
+                "（页面标题为“登录 — 安全结账”）。请在 v2/session.py 的那个窗口里完成这次登录，"
+                "登录后页面会回到结账流程，再重新运行 main.py")
+        else:
+            page = guest_login(session, browser, page, model)
+            model = base.read_model(page)
+    elif base.require(model, "checkout", "d", "page") != "Fulfillment":
+        raise ValueError("结账入口既不是访客登录页，也不是履约页")
 
+    if prepared is not None:
+        check_prepared_checkout(model, sku, total)
+
+    sticky_headers = {}
     def action(path, name, form):
         nonlocal page, model
-        page = base.follow_navigation(session, base.post_action(session, page.url, model, path, name, form))
+        page = base.follow_navigation(session, base.post_action(
+            session, page.url, model, path, name, form, extra_headers=sticky_headers))
         model = base.read_model(page)
+        # 登录态 Billing/Review 模型下发 x-as-actk；下发过一次后浏览器后续动作仍继续携带。
+        action_key = model.get("meta", {}).get("h", {}).get("x-as-actk")
+        if isinstance(action_key, str) and action_key:
+            sticky_headers["x-as-actk"] = action_key
         print("requests：" + name)
 
     fulfillment = "checkout.fulfillment.fulfillmentOptions.selectFulfillmentLocation"
@@ -154,30 +240,43 @@ def checkout(session, browser, bag_page, config, sku):
     if selected.get("storeDisabled"):
         raise ValueError(f"目标门店不可取货（无现货库存或未开放预约）：{selected.get('storeName', config['自提门店'])}")
     store_name = selected["storeName"]
-    # 门店字段随 continueFromFulfillmentToPickupContact 一并提交即可完成绑定，
-    # 单独再发一次 select 只会多花约 10s；绑定结果仍由下方自提摘要校验兜底。
+    # 搜索仅查询库存；实际选店后服务端才会下发取货联系人入口。
     fields[prefix + ".selectStore"] = config["自提门店"]
+    action(STORE, "select", fields)
+    if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
+        raise ValueError("服务端选中的自提门店与配置不一致")
     action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
     base.require(model, "checkout", "pickupContact")
     if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != store_name:
         raise ValueError("自提摘要门店不一致")
-    contact_model = deepcopy(model)
-    contact_url = page.url
     prefix = ".".join(CONTACT)
     fields = {prefix + "." + field: config[key] for field, key in (
-        ("lastName", "姓"), ("firstName", "名"), ("fullDaytimePhone", "手机号"), ("emailAddress", "邮箱"))}
+        ("lastName", "姓"), ("firstName", "名"), ("fullDaytimePhone", "手机号"))}
     token_key = prefix + ".verificationModule.verificationToken"
-    fields[token_key] = base.require(model, *CONTACT, "verificationModule", "d", "verificationToken")
-    action(CONTACT, "contactVerify", fields)
-    data = base.require(model, *CONTACT, "verificationModule", "d")
-    if data["authRequired"]:
-        fields[token_key] = verify(session, contact_url, data, config["手机号"])
-        action(CONTACT + ("verificationModule",), "submitVerificationToken", {token_key: fields[token_key]})
+    if "contactVerify" in base.require(model, *CONTACT).get("a", {}):
+        # 访客态：提交联系人触发验证；服务端要求时再由 sms 提供验证令牌。
+        contact_model = deepcopy(model)
+        contact_url = page.url
+        fields[prefix + ".emailAddress"] = config["邮箱"]
+        fields[token_key] = base.require(model, *CONTACT, "verificationModule", "d", "verificationToken")
+        action(CONTACT, "contactVerify", fields)
         data = base.require(model, *CONTACT, "verificationModule", "d")
-    if not data["isVerified"] or data["authRequired"]:
-        raise ValueError("服务端未确认联系人验证成功")
-    contact_model["meta"]["h"] = model["meta"]["h"]
-    model = contact_model  # 验证响应只含局部模块；继续动作取原模型，头取最新响应。
+        if data["authRequired"]:
+            if prepared is not None or not config["允许访客结账"]:
+                raise ValueError("无人值守结账要求额外短信验证，流程停止；未发送短信")
+            fields[token_key] = verify(session, contact_url, data, config["手机号"])
+            action(CONTACT + ("verificationModule",), "submitVerificationToken", {token_key: fields[token_key]})
+            data = base.require(model, *CONTACT, "verificationModule", "d")
+        if not data["isVerified"] or data["authRequired"]:
+            raise ValueError("服务端未确认联系人验证成功")
+        contact_model["meta"]["h"] = model["meta"]["h"]
+        model = contact_model  # 验证响应只含局部模块；继续动作取原模型，头取最新响应。
+    else:
+        # 登录态：模型不下发 contactVerify，也不提供 isVerified，令牌为空即可进入 Billing。
+        verification = base.require(model, *CONTACT, "verificationModule", "d")
+        if verification["authRequired"] is not False:
+            raise ValueError("模型要求联系人验证，但未提供 contactVerify 动作")
+        fields[token_key] = base.require(model, *CONTACT, "verificationModule", "d", "verificationToken")
     fields.update({"checkout.pickupContact.selfPickupContact.nationalIdSelf.nationalIdSelf": config["证件后四位"],
         "checkout.pickupContact.eFapiaoSelector.selectFapiao": config["发票类型"],
         "checkout.pickupContact.eFapiaoSelector.ePersonalFapiao.invoiceHeader": model["checkout"]["pickupContact"]["eFapiaoSelector"]["ePersonalFapiao"]["d"]["invoiceHeader"]})
@@ -196,7 +295,8 @@ def checkout(session, browser, bag_page, config, sku):
         if model["checkout"]["d"]["page"] != "Review":
             raise ValueError("支付方式未生效，仍停留在支付页")
     check_review(model, config, sku, total)
-    response = base.post_action(session, page.url, model, ("checkout", "review", "placeOrder"), "continueFromReviewToProcess", {})
+    response = base.post_action(session, page.url, model, ("checkout", "review", "placeOrder"),
+                                "continueFromReviewToProcess", {}, extra_headers=sticky_headers)
     payload = base.parse_json(response.text)
     base.check_business_errors(payload)
     if payload["head"]["status"] not in (302, "302"):
@@ -204,4 +304,7 @@ def checkout(session, browser, bag_page, config, sku):
     target = base.apple_url(response.url, payload["head"]["data"]["url"])
     if urlsplit(target).path != "/shop/checkout/status":
         raise ValueError("未返回已知订单处理页，不可重复提交")
-    return base.query_order(session, target)
+    result = base.query_order(session, target)
+    # 供 main.py 记录每个账号的结果；不改动 query_order 的返回契约。
+    result.update({"SKU": sku, "数量": config["数量"], "金额": total, "门店": store_name})
+    return result
