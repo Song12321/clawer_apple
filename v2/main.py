@@ -23,7 +23,9 @@ REQUIRED_KEYS = ("账号", "资料目录", "调试端口", "商品页面", "机�
 def account_config(account):
     """账号配置 + 运行级开关，形成结账流程实际使用的 config。"""
     return {**account, "允许访客结账": RUN["允许访客结账"], "使用抓包代理": RUN["使用抓包代理"],
-            "缺货轮询间隔秒": RUN["缺货轮询间隔秒"]}
+            "缺货轮询间隔秒": RUN["缺货轮询间隔秒"],
+            "选店541重试次数": RUN["选店541重试次数"],
+            "选店541重试间隔秒": RUN["选店541重试间隔秒"]}
 
 
 def check_account(config):
@@ -51,6 +53,12 @@ def check_runtime():
     interval = RUN["缺货轮询间隔秒"]
     if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
         raise ValueError("RUN[缺货轮询间隔秒] 必须是有限正数")
+    retries = RUN["选店541重试次数"]
+    if type(retries) is not int or retries < 0:
+        raise ValueError("RUN[选店541重试次数] 必须是非负整数")
+    interval = RUN["选店541重试间隔秒"]
+    if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
+        raise ValueError("RUN[选店541重试间隔秒] 必须是有限正数")
 
 
 def check_accounts(accounts):

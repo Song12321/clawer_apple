@@ -32,6 +32,10 @@ class CheckoutExpired(ValueError):
     """明确的结账过期；仅由下单前的调用方决定是否恢复。"""
 
 
+class HTTP541Error(RuntimeError):
+    """HTTP 541；由具体业务动作决定是否允许重试。"""
+
+
 def pickup_unavailable(model):
     checkout = model.get("checkout", {})
     locator = checkout.get("fulfillment", {}).get("pickupTab", {}).get("pickup", {}).get("storeLocator", {})
@@ -351,9 +355,9 @@ def request(session, method, url, *, headers=None, form=None):
         # 只标识接口动作，不输出查询中的会话凭据或整个 URL。
         action = dict(parse_qsl(parsed.query)).get("_a", "")
         action_label = f"，动作 {action}" if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", action) else ""
-        raise RuntimeError(
+        raise HTTP541Error(
             f"requests 收到 HTTP 541：{method} {parsed.hostname}{parsed.path}{action_label}；"
-            "已停止，未自动重试。Page Not Found 页面不能作为成功结果。"
+            "未取得有效业务响应。"
         )
     if not 200 <= response.status_code < 400:
         raise RuntimeError(f"收到未处理的 HTTP 状态：{response.status_code}")
