@@ -25,6 +25,20 @@ REQABLE_CA = Path.home() / "AppData/Roaming/Reqable/certificate/reqable-root.crt
 # 显式经过当前已确认监听的 Reqable 端口，避免系统代理关闭后证书与链路不匹配。
 REQABLE_PROXY = "http://127.0.0.1:9000"
 
+PICKUP_UNAVAILABLE = "你所在的地区无货可取。请尝试重新搜索。"
+
+
+class CheckoutExpired(ValueError):
+    """明确的结账过期；仅由下单前的调用方决定是否恢复。"""
+
+
+def pickup_unavailable(model):
+    checkout = model.get("checkout", {})
+    locator = checkout.get("fulfillment", {}).get("pickupTab", {}).get("pickup", {}).get("storeLocator", {})
+    return checkout.get("d", {}).get("page") == "Fulfillment" and any(
+        isinstance(message, dict) and message.get("level") == "ERROR"
+        and message.get("text") == PICKUP_UNAVAILABLE for message in locator.get("m", []))
+
 
 def is_reqable_available():
     if not REQABLE_CA.is_file():
@@ -132,7 +146,20 @@ def _handoff(page, product_url, *, include_page=False, capture_proxy=False):
             print("Python 请求经 Reqable 抓包代理转发（配置：使用抓包代理）。", flush=True)
         else:
             print("Python 请求直连，未经 Reqable 代理；需要抓包时把配置「使用抓包代理」设为 True。", flush=True)
-        copy_browser_cookies(session, read_page_cookies(page, [url]))
+        # 履约验证完成不代表异步 /shop/beacon/atb 已下发加购令牌。
+        # 交接前等待浏览器 Cookie 就绪；不重放 beacon，不编造令牌。
+        deadline = time.monotonic() + 10
+        while True:
+            copy_browser_cookies(session, read_page_cookies(page, [url, product_url]))
+            tokens = atb_tokens(session, product_url)
+            if len(tokens) == 1 and tokens[0].split("|")[-1]:
+                break
+            if len(tokens) > 1:
+                raise ValueError(f"会话交接发现 {len(tokens)} 个适用的 as_atb Cookie；作用域冲突，未加购")
+            if time.monotonic() >= deadline:
+                state = "未下发" if not tokens else "令牌尾段为空"
+                raise ValueError(f"等待浏览器加购令牌 10 秒仍未就绪：as_atb {state}；未加购")
+            page.wait_for_timeout(250)
         session.headers["User-Agent"] = headers["user-agent"]
         if "accept-language" in headers:
             session.headers["Accept-Language"] = headers["accept-language"]
@@ -397,7 +424,7 @@ def parse_json(text):
     return result
 
 
-def check_business_errors(model):
+def check_business_errors(model, *, allow_pickup_unavailable=False):
     # 抓包中业务状态 200 仍可能携带模块 m 中的 ERROR。
     # 诊断时只输出字段名、少量错误标识和脱敏后的错误文本，不回显原始响应。
     def safe_text(value):
@@ -417,6 +444,11 @@ def check_business_errors(model):
             if isinstance(node.get("m"), list):
                 for message in node["m"]:
                     if isinstance(message, dict) and message.get("level") == "ERROR":
+                        # 仅履约轮询允许这一条已确认的库存状态，其余 ERROR 仍立即失败。
+                        if (allow_pickup_unavailable and pickup_unavailable(model)
+                                and path == "/checkout/fulfillment/pickupTab/pickup/storeLocator"
+                                and message.get("text") == PICKUP_UNAVAILABLE):
+                            continue
                         details = ["字段=" + ",".join(sorted(str(key) for key in message))]
                         for key in ("code", "errorCode", "type"):
                             value = safe_text(message.get(key))
@@ -436,7 +468,7 @@ def check_business_errors(model):
     visit(model, "")
 
 
-def read_model(response):
+def read_model(response, *, allow_pickup_unavailable=False):
     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
     if content_type == "application/json":
         payload = parse_json(response.text)
@@ -454,7 +486,7 @@ def read_model(response):
         raise ValueError("不支持的响应 Content-Type")
     if not isinstance(model, dict):
         raise ValueError("页面模型必须是对象")
-    check_business_errors(model)
+    check_business_errors(model, allow_pickup_unavailable=allow_pickup_unavailable)
     return model
 
 
@@ -525,14 +557,21 @@ def fetch_summary(session, page, product):
     return model, form
 
 
+def atb_tokens(session, url):
+    """读取实际适用于加购 URL 的 Cookie，不按名称任取一个令牌。"""
+    header = session.prepare_request(requests.Request("GET", url)).headers.get("Cookie", "")
+    return [entry.strip().split("=", 1)[1] for entry in header.split(";")
+            if entry.strip().startswith("as_atb=")]
+
+
 def add_to_bag(session, page, form):
     # 浏览器实测：从当前商品页按表单 GET 提交，不使用附件加购接口。
     # 浏览器商品页已请求 beacon；使用该会话当前令牌，不重复初始化。
-    cookie_header = session.prepare_request(requests.Request("GET", page.url)).headers.get("Cookie", "")
-    tokens = [entry.strip().split("=", 1)[1] for entry in cookie_header.split(";")
-              if entry.strip().startswith("as_atb=")]
-    if len(tokens) != 1 or not tokens[0].split("|")[-1]:
-        raise ValueError("当前会话没有唯一有效的 as_atb 加购令牌")
+    tokens = atb_tokens(session, page.url)
+    if len(tokens) != 1:
+        raise ValueError(f"加购前适用的 as_atb Cookie 数量为 {len(tokens)}，要求恰好 1 个；未加购")
+    if not tokens[0].split("|")[-1]:
+        raise ValueError("加购前 as_atb 令牌尾段为空；未加购")
     fields = dict(form)
     fields.update({"atbtoken": tokens[0].split("|")[-1], "igt": "true", "add-to-cart": "add-to-cart"})
     parsed = urlsplit(page.url)

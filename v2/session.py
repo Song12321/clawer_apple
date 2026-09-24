@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
-from config import ACCOUNTS, RUN
+from config import RUN, selected_accounts
 from contextlib import contextmanager, ExitStack
 from order import bag_page_for_checkout, browser_cookies
 from playwright.sync_api import sync_playwright
@@ -16,8 +16,7 @@ from playwright.sync_api import sync_playwright
 BAG_URL = "https://www.apple.com.cn/shop/bag"
 
 
-class CheckoutExpired(ValueError):
-    """仅表示下单前结账上下文缺失或明确过期，可以重新准备一次。"""
+CheckoutExpired = base.CheckoutExpired
 
 
 AUTH_REQUIRED = ("[需要人工认证] Apple 要求安全结账登录或双重认证。"
@@ -83,9 +82,16 @@ def require_fulfillment(response):
         raise CheckoutExpired("结账会话已过期")
     if path == "/shop/signIn":
         raise RuntimeError(AUTH_REQUIRED)
+    if path == "/shop/checkout/interstitial":
+        raise ValueError("[已有订单结果] 当前结账已进入订单结果页，并非登录过期；"
+                         "停止，避免重复下单。请核对 results.jsonl 中的成功记录；"
+                         "如需另下一单，需先准备新的结账上下文。")
+    if path == "/shop/checkout/status":
+        raise ValueError("[订单处理中] 当前结账已进入订单处理阶段；"
+                         "停止，请先核实订单结果，不自动重新下单。")
     if response.status_code != 200 or urlsplit(response.url).path != "/shop/checkout":
         raise ValueError("服务端未返回预期结账页面；停止，不自动重建结账")
-    model = base.read_model(response)
+    model = base.read_model(response, allow_pickup_unavailable=True)
     if "signIn" in model or base.require(model, "checkout", "d", "page") != "Fulfillment":
         raise ValueError("当前结账不在 Fulfillment 阶段；停止，不自动重建或重复提交")
     return model
@@ -196,7 +202,7 @@ def prepare_checkout(account, endpoint, *, force=False):
             model = base.read_model(bag)
             item = base.check_bag(model, product["partNumber"], config["数量"])
             entry = base.checkout_bag(session, bag, model, item)
-            entry_model = base.read_model(entry)
+            entry_model = base.read_model(entry, allow_pickup_unavailable=True)
             if "guestLogin" not in entry_model.get("signIn", {}):
                 require_fulfillment(entry)
             # Python 创建结账后，将当次 Cookie 和站点产生的完整 URL 交给同一浏览器。
@@ -208,9 +214,11 @@ def prepare_checkout(account, endpoint, *, force=False):
 def main():
     if not base.CHROME_PATH.is_file():
         raise ValueError("找不到 Chrome，请检查 CHROME_PATH")
+    accounts = selected_accounts()
+    print("本次准备账号：" + "、".join(account["账号"] for account in accounts), flush=True)
     sessions = []
     try:
-        for account in ACCOUNTS:
+        for account in accounts:
             endpoint = f"http://127.0.0.1:{account['调试端口']}"
             process = None
             if not live_endpoint(account):

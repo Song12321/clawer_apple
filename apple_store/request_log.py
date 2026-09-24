@@ -1,8 +1,11 @@
 """Console timing without request credentials or payloads."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from time import perf_counter
 from urllib.parse import parse_qsl, urlsplit
+
+account_name = ContextVar("account_name", default="")
 
 
 ACTIONS = {
@@ -38,6 +41,8 @@ def request_label(method, url):
 
 @contextmanager
 def timing(label):
+    if account_name.get():
+        label = f"[{account_name.get()}] {label}"
     start = perf_counter()
     print(f"[{datetime.now():%H:%M:%S.%f}] 开始 | {label}", flush=True)
     result = {"started": start}

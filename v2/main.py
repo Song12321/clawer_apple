@@ -1,16 +1,19 @@
-"""按 ACCOUNTS 串行跑完每个账号：接续已准备的结账，不执行付款。
+"""按 ACCOUNTS 并行执行每个账号：接续已准备的结账，不执行付款。
 
 运行前先启动 v2/session.py 并完成各账号登录；本脚本通过各账号的调试端口复用常驻会话。
-一个账号失败不影响后续账号，但会在结尾汇总并以非零状态退出。
+各账号缺货等待及失败互不阻塞；成功一单即结束对应任务。
 """
 import json
-import time
+import math
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from threading import Event
 from datetime import datetime
 from pathlib import Path
 
-from config import ACCOUNTS, RUN
+from config import RUN, selected_accounts
 from order import base, checkout
-from session import live_endpoint, ready_session
+from session import ready_session
+from apple_store.request_log import account_name
 
 REQUIRED_KEYS = ("账号", "资料目录", "调试端口", "商品页面", "机型", "颜色", "容量", "数量", "自提门店",
                  "搜索地区", "省", "市", "区", "姓", "名", "手机号", "邮箱", "证件后四位",
@@ -19,7 +22,8 @@ REQUIRED_KEYS = ("账号", "资料目录", "调试端口", "商品页面", "机�
 
 def account_config(account):
     """账号配置 + 运行级开关，形成结账流程实际使用的 config。"""
-    return {**account, "允许访客结账": RUN["允许访客结账"], "使用抓包代理": RUN["使用抓包代理"]}
+    return {**account, "允许访客结账": RUN["允许访客结账"], "使用抓包代理": RUN["使用抓包代理"],
+            "缺货轮询间隔秒": RUN["缺货轮询间隔秒"]}
 
 
 def check_account(config):
@@ -44,8 +48,9 @@ def check_runtime():
     for key in ("允许访客结账", "使用抓包代理"):
         if not isinstance(RUN[key], bool):
             raise ValueError(f"RUN[{key}] 必须是 True 或 False")
-    if not isinstance(RUN["账号间隔秒"], (int, float)) or RUN["账号间隔秒"] < 0:
-        raise ValueError("RUN[账号间隔秒] 必须是非负数")
+    interval = RUN["缺货轮询间隔秒"]
+    if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
+        raise ValueError("RUN[缺货轮询间隔秒] 必须是有限正数")
 
 
 def check_accounts(accounts):
@@ -69,23 +74,28 @@ def check_accounts(accounts):
         seen_ports.add(port)
 
 
-def require_sessions(accounts):
-    """预检：所有账号都必须有活着的常驻会话，避免跑到一半才发现要登录。"""
-    missing = [account["账号"] for account in accounts if live_endpoint(account) is None]
-    if missing:
-        raise RuntimeError(
-            "以下账号没有检测到常驻会话：" + "、".join(missing)
-            + "；请先运行 .venv/Scripts/python.exe v2/session.py 并完成登录后重试")
-
-def run_account(config):
-    """下单前验证会话，明确过期时只自动准备一次。"""
-    with ready_session(config) as (session, browser, entry):
-        product_page = base.follow_navigation(session, base.request(session, "GET", config["商品页面"]))
-        product = base.select_product(product_page.content, config)
-        bag = base.follow_navigation(session, base.request(session, "GET", "https://www.apple.com.cn/shop/bag"))
-        base.check_bag(base.read_model(bag), product["partNumber"], config["数量"])
-        # 商品页和购物袋只做一致性校验；结账动作使用交接时 requests 取得的最新 Fulfillment 模型。
-        return checkout(session, browser, bag, config, product["partNumber"], prepared=entry)
+def run_account(config, stop_event):
+    """一个工作线程拥有一个账号的全部浏览器及 HTTP 对象。"""
+    token = account_name.set(config["账号"])
+    try:
+        for attempt in range(2):
+            if stop_event.is_set():
+                raise RuntimeError("用户已停止执行；未开始新的结账")
+            with ready_session(config) as (session, browser, entry):
+                product_page = base.follow_navigation(session, base.request(session, "GET", config["商品页面"]))
+                product = base.select_product(product_page.content, config)
+                bag = base.follow_navigation(session, base.request(session, "GET", "https://www.apple.com.cn/shop/bag"))
+                base.check_bag(base.read_model(bag), product["partNumber"], config["数量"])
+                try:
+                    return checkout(session, browser, bag, config, product["partNumber"],
+                                    prepared=entry, stop_event=stop_event)
+                except base.CheckoutExpired:
+                    # checkout 仅在进入联系人之前抛出此类型；创单及结果查询绝不重跑。
+                    if attempt:
+                        raise RuntimeError("库存等待期间结账再次过期；已恢复过一次，停止") from None
+            print(f"[{config['账号']}] 库存等待期间结账过期；重新验证并恢复一次。", flush=True)
+    finally:
+        account_name.reset(token)
 
 
 def describe_failure(error):
@@ -112,39 +122,50 @@ def append_result(path, record):
 
 def main():
     check_runtime()
-    check_accounts(ACCOUNTS)
-    require_sessions(ACCOUNTS)
-    print("预检通过：" + str(len(ACCOUNTS)) + " 个账号的常驻浏览器可连接（逐账号验证结账会话）（"
-          + "、".join(account["账号"] for account in ACCOUNTS) + "）；开始串行下单。", flush=True)
+    accounts = selected_accounts()
+    check_accounts(accounts)
+    print("本次下单账号：" + "、".join(account["账号"] for account in accounts), flush=True)
+    print(f"启动 {len(accounts)} 个账号并行执行；各账号成功一单即停止，缺货独立轮询。", flush=True)
     results, failures = [], []
-    for index, account in enumerate(ACCOUNTS):
-        if index:
-            time.sleep(RUN["账号间隔秒"])
-        name = account["账号"]
-        config = account_config(account)
-        print(f"=== [{name}] 开始：{config['商品页面']} ===", flush=True)
-        record = {"时间": datetime.now().astimezone().isoformat(timespec="seconds"), "账号": name,
-                  "商品页面": config["商品页面"], "门店": config["自提门店"], "数量": config["数量"]}
+    stop_event = Event()
+    # 每个账号仅提交一次任务；完成后不重新入队。结果统一由主线程写入。
+    with ThreadPoolExecutor(max_workers=len(accounts)) as pool:
+        pending = {}
         try:
-            result = run_account(config)
-        except Exception as error:  # 单个账号失败不影响后续账号；失败原因单独记录
-            message = describe_failure(error)
-            print(f"[{name}] 失败：{message}", flush=True)
-            failures.append((name, message))
-            append_result(RUN["结果文件"], {**record, "状态": "失败", "失败原因": message})
-            continue
-        print(f"[{name}] 成功：订单号 {result['订单号']}"
-              + (f"，支付链接 {result['支付链接']}" if "支付链接" in result else ""), flush=True)
-        results.append((name, result))
-        append_result(RUN["结果文件"], {**record, "状态": "成功", "SKU": result.get("SKU"),
-                                        "金额": result.get("金额"), "订单号": result["订单号"],
-                                        "支付链接": result.get("支付链接", "")})
-    print(f"=== 结束：成功 {len(results)} 个，失败 {len(failures)} 个；结果已追加到 {RUN['结果文件']} ===",
-          flush=True)
-    for name, message in failures:
-        print(f"  失败账号 {name}：{message}", flush=True)
+            for account in accounts:
+                config = account_config(account)
+                print(f"=== [{config['账号']}] 开始：{config['商品页面']} ===", flush=True)
+                record = {"时间": datetime.now().astimezone().isoformat(timespec="seconds"), "账号": config["账号"],
+                          "商品页面": config["商品页面"], "门店": config["自提门店"], "数量": config["数量"]}
+                pending[pool.submit(run_account, config, stop_event)] = record
+            while pending:
+                try:
+                    done, _ = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                except KeyboardInterrupt:
+                    stop_event.set()
+                    print("收到停止指令：结束缺货等待，不再开始新动作；已提交订单仍查询并记录结果。", flush=True)
+                    continue
+                for future in done:
+                    record = pending.pop(future)
+                    name = record["账号"]
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        message = describe_failure(error)
+                        print(f"[{name}] 停止：{message}", flush=True)
+                        failures.append((name, message))
+                        append_result(RUN["结果文件"], {**record, "状态": "失败", "失败原因": message})
+                        continue
+                    print(f"[{name}] 成功：订单号 {result['订单号']}；本账号停止，支付链接见本地结果文件。", flush=True)
+                    results.append((name, result))
+                    append_result(RUN["结果文件"], {**record, "状态": "成功", "SKU": result.get("SKU"),
+                                                  "金额": result.get("金额"), "订单号": result["订单号"],
+                                                  "支付链接": result.get("支付链接", "")})
+        finally:
+            stop_event.set()
+    print(f"=== 结束：成功 {len(results)} 个，停止 {len(failures)} 个；结果已追加到 {RUN['结果文件']} ===", flush=True)
     if failures:
-        raise RuntimeError(f"{len(failures)} 个账号失败，详见上方汇总")
+        raise RuntimeError(f"{len(failures)} 个账号停止，详见上方日志")
 
 
 if __name__ == "__main__":
@@ -152,7 +173,7 @@ if __name__ == "__main__":
         main()
     except (ValueError, RuntimeError) as error:
         # 本地配置、预检与流程错误均已使用不包含凭据的错误信息。
-        raise SystemExit("流程停止：" + str(error) + "；未自动重试。") from None
+        raise SystemExit("流程停止：" + str(error) + "；未自动重试创单。") from None
     except Exception as error:
         # 原始网络/浏览器异常可能含 Cookie、URL 令牌或个人信息，不打印详情。
-        raise SystemExit("流程停止：" + type(error).__name__ + "；未自动重试。") from None
+        raise SystemExit("流程停止：" + type(error).__name__ + "；未自动重试创单。") from None

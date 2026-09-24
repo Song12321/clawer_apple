@@ -1,8 +1,9 @@
-"""本次 HAR 的单件、自提、个人发票、支付宝串行结账。"""
+"""单账号串行结账；缺货时查询同一门店，成功一单即返回。"""
 import sys
 import time
 from copy import deepcopy
 from pathlib import Path
+from threading import Event
 from urllib.parse import parse_qsl, urlsplit
 from playwright.sync_api import expect
 
@@ -179,12 +180,19 @@ def check_prepared_checkout(model, sku, total):
         raise ValueError("已准备结账的金额与购物袋不一致")
 
 
-def checkout(session, browser, bag_page, config, sku, *, prepared=None):
+def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_event=None):
+    stop_event = stop_event if stop_event is not None else Event()
+    name = config["账号"]
+
+    def check_stopped():
+        if stop_event.is_set():
+            raise RuntimeError("用户已停止执行；未提交新的订单")
+
     model = base.read_model(bag_page)
     item = base.check_bag(model, sku, config["数量"])
     total = model["shoppingCart"]["summary"]["d"]["total"]
     page = prepared if prepared is not None else base.checkout_bag(session, bag_page, model, item)
-    model = base.read_model(page)
+    model = base.read_model(page, allow_pickup_unavailable=True)
     if "guestLogin" in model.get("signIn", {}):
         if prepared is not None or not config["允许访客结账"]:
             # 无人值守流程：登录态缺失直接停止，不等待人工登录、也不回退访客表单。
@@ -198,54 +206,84 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None):
     elif base.require(model, "checkout", "d", "page") != "Fulfillment":
         raise ValueError("结账入口既不是访客登录页，也不是履约页")
 
-    if prepared is not None:
-        check_prepared_checkout(model, sku, total)
-
     sticky_headers = {}
     def action(path, name, form):
         nonlocal page, model
+        check_stopped()
         page = base.follow_navigation(session, base.post_action(
             session, page.url, model, path, name, form, extra_headers=sticky_headers))
-        model = base.read_model(page)
+        fulfillment_action = name in ("selectFulfillmentLocationAction", "search", "select",
+                                      "continueFromFulfillmentToPickupContact")
+        path_now = urlsplit(page.url).path
+        if fulfillment_action and path_now == "/shop/sorry/session_expired":
+            raise base.CheckoutExpired("库存等待期间结账过期")
+        if path_now == "/shop/signIn":
+            browser_cookies(session, browser)
+            browser.goto(page.url, wait_until="domcontentloaded", timeout=30000)
+            browser.bring_to_front()
+            raise RuntimeError("[需要人工认证] Apple 要求重新登录或双重认证；请在该账号窗口完成后重新运行 main.py")
+        model = base.read_model(page, allow_pickup_unavailable=fulfillment_action)
         # 登录态 Billing/Review 模型下发 x-as-actk；下发过一次后浏览器后续动作仍继续携带。
         action_key = model.get("meta", {}).get("h", {}).get("x-as-actk")
         if isinstance(action_key, str) and action_key:
             sticky_headers["x-as-actk"] = action_key
-        print("requests：" + name)
+        print(f"[{config['账号']}] requests：{name}", flush=True)
 
     fulfillment = "checkout.fulfillment.fulfillmentOptions.selectFulfillmentLocation"
     action(("checkout", "fulfillment", "fulfillmentOptions"), "selectFulfillmentLocationAction", {fulfillment: "RETAIL"})
-    locator = base.require(model, *STORE)
     prefix = ".".join(STORE)
-    fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
-              prefix + ".selectStore": locator["d"]["selectStore"], prefix + ".searchInput": config["搜索地区"]}
     address = {"city": config["市"], "state": config["省"], "district": config["区"],
-               "provinceCityDistrict": config["市"] + " " + config["区"], "countryCode": "CN"}
-    fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
-    action(STORE, "search", fields)
-    stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
-    print(f"--- 搜索地区【{config['搜索地区']}】返回 {len(stores)} 家直营门店状态 ---")
-    for s in stores:
-        sid = s.get("storeId", "")
-        sname = s.get("storeName", "")
-        disabled = s.get("storeDisabled", False)
-        avail = s.get("availability", {}).get("storeAvailability") or ("不可取货" if disabled else "可取货")
-        is_target = " [目标门店]" if sid == config["自提门店"] else ""
-        status_tag = "【不可取货】" if disabled else "【可自提】"
-        print(f"  {status_tag} {sid} {sname} - {avail}{is_target}")
-    print("---------------------------------------------------------")
-    selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
-    if not selected:
-        raise ValueError(f"目标门店不在搜索结果中：{config['自提门店']}")
-    if selected.get("storeDisabled"):
-        raise ValueError(f"目标门店不可取货（无现货库存或未开放预约）：{selected.get('storeName', config['自提门店'])}")
-    store_name = selected["storeName"]
-    # 搜索仅查询库存；实际选店后服务端才会下发取货联系人入口。
-    fields[prefix + ".selectStore"] = config["自提门店"]
-    action(STORE, "select", fields)
-    if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
-        raise ValueError("服务端选中的自提门店与配置不一致")
-    action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
+               "provinceCityDistrict": " ".join(
+                   [config["市"], config["区"]] if config["省"] == config["市"]
+                   else [config["省"], config["市"], config["区"]]), "countryCode": "CN"}
+    attempt = 0
+
+    def wait_stock(reason):
+        interval = config["缺货轮询间隔秒"]
+        print(f"[{name}] 第 {attempt} 次查询：{config['自提门店']} {reason}，{interval} 秒后重查。", flush=True)
+        if stop_event.wait(interval):
+            raise RuntimeError("用户已停止缺货轮询；未提交订单")
+
+    if base.pickup_unavailable(model):
+        print(f"[{name}] 当前默认地区无货；继续按配置地区搜索。", flush=True)
+    while True:
+        check_stopped()
+        attempt += 1
+        locator = base.require(model, *STORE)
+        fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
+                  prefix + ".selectStore": locator["d"]["selectStore"], prefix + ".searchInput": config["搜索地区"]}
+        fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
+        action(STORE, "search", fields)
+        if base.pickup_unavailable(model):
+            wait_stock("配置地区无货")
+            continue
+        stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
+        selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
+        if selected is None:
+            raise ValueError(f"目标门店不在搜索结果中：{config['自提门店']}；不按缺货重试")
+        disabled = base.require(selected, "storeDisabled")
+        if type(disabled) is not bool:
+            raise ValueError("门店库存状态不是布尔值；停止")
+        if disabled:
+            wait_stock("当前不可取货")
+            continue
+        store_name = base.require(selected, "storeName")
+        print(f"[{name}] 第 {attempt} 次查询：{store_name} 可取货，开始选店结账。", flush=True)
+        fields[prefix + ".selectStore"] = config["自提门店"]
+        action(STORE, "select", fields)
+        if base.pickup_unavailable(model):
+            wait_stock("选店时已无货")
+            continue
+        if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
+            raise ValueError("服务端选中的自提门店与配置不一致")
+        # 缺货时商品节点可能尚未生成；选店成功后、进入联系人之前严格核对。
+        if prepared is not None:
+            check_prepared_checkout(model, sku, total)
+        action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
+        if base.pickup_unavailable(model):
+            wait_stock("进入联系人前已无货")
+            continue
+        break
     base.require(model, "checkout", "pickupContact")
     if model["checkout"]["companionBar"]["orderDetails"]["fulfillmentCompanionBar"]["pickupSummary"]["d"]["store_name"] != store_name:
         raise ValueError("自提摘要门店不一致")
@@ -295,6 +333,8 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None):
         if model["checkout"]["d"]["page"] != "Review":
             raise ValueError("支付方式未生效，仍停留在支付页")
     check_review(model, config, sku, total)
+    check_stopped()
+    print(f"[{name}] 即将提交一次创单请求；之后无论成功或结果不明，均不重新下单。", flush=True)
     response = base.post_action(session, page.url, model, ("checkout", "review", "placeOrder"),
                                 "continueFromReviewToProcess", {}, extra_headers=sticky_headers)
     payload = base.parse_json(response.text)
