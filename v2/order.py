@@ -240,12 +240,12 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
 
     def wait_stock(reason):
         interval = config["缺货轮询间隔秒"]
-        print(f"[{name}] 第 {attempt} 次查询：{config['自提门店']} {reason}，{interval} 秒后重查。", flush=True)
+        print(f"[{name}] 第 {attempt} 次选店：{config['自提门店']} {reason}，{interval} 秒后重查。", flush=True)
         if stop_event.wait(interval):
             raise RuntimeError("用户已停止缺货轮询；未提交订单")
 
     if base.pickup_unavailable(model):
-        print(f"[{name}] 当前默认地区无货；先按配置地区搜索。", flush=True)
+        print(f"[{name}] 当前默认地区无货；直接尝试配置门店。", flush=True)
     while True:
         check_stopped()
         attempt += 1
@@ -253,14 +253,14 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
         fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
                   prefix + ".selectStore": config["自提门店"], prefix + ".searchInput": config["搜索地区"]}
         fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
-        action(STORE, "search", fields)
+        action(STORE, "select", fields)
         if base.pickup_unavailable(model):
-            wait_stock("配置地区无货")
+            wait_stock("直接选店返回缺货")
             continue
         stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
         selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
         if selected is None:
-            raise ValueError(f"搜索响应未包含目标门店：{config['自提门店']}；不按缺货重试")
+            raise ValueError(f"选店响应未包含目标门店：{config['自提门店']}；不按缺货重试")
         disabled = base.require(selected, "storeDisabled")
         if type(disabled) is not bool:
             raise ValueError("门店库存状态不是布尔值；停止")
@@ -268,11 +268,7 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
             wait_stock("当前不可取货")
             continue
         store_name = base.require(selected, "storeName")
-        print(f"[{name}] 第 {attempt} 次查询：{store_name} 可取货，继续结账。", flush=True)
-        action(STORE, "select", fields)
-        if base.pickup_unavailable(model):
-            wait_stock("选店时已无货")
-            continue
+        print(f"[{name}] 第 {attempt} 次选店：{store_name} 可取货，继续结账。", flush=True)
         if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
             raise ValueError("服务端选中的自提门店与配置不一致")
         # 缺货时商品节点可能尚未生成；选店成功后、进入联系人之前严格核对。
