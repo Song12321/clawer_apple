@@ -18,9 +18,9 @@ import yaml
 
 
 INTERVAL_SECONDS = 5 * 60
-PROXY_GROUP = "追云加速"
-# 仅选实际节点，排除订阅中的流量/到期提示和自动策略组。
-NODE_NAME_SUFFIX = "【vip1】"
+PROXY_GROUP = "🚀 手动切换"
+# 空字符串表示不限制名称后缀；仍排除策略组、直连和拒绝项。
+NODE_NAME_SUFFIX = ""
 VERGE_CONFIG = (
     Path(os.environ["APPDATA"])
     / "io.github.clash-verge-rev.clash-verge-rev"
