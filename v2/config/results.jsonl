@@ -11,3 +11,7 @@
 {"时间": "2026-09-25T19:49:44+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "KeyError"}
 {"时间": "2026-09-25T21:03:56+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "用户已停止缺货轮询；未提交订单"}
 {"时间": "2026-09-25T21:04:19+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "HTTPS SSL 失败：SSLEOFError；未自动重试"}
+{"时间": "2026-09-25T21:47:53+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "浏览器操作失败：TimeoutError"}
+{"时间": "2026-09-25T21:57:23+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "[需要人工认证] Apple 要求安全结账登录或双重认证。请在该账号浏览器窗口完成认证，停在配送／自提页面后重新运行 main.py；当前账号已停止，未自动转访客结账。"}
+{"时间": "2026-09-25T21:57:40+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "[需要人工认证] Apple 要求安全结账登录或双重认证。请在该账号浏览器窗口完成认证，停在配送／自提页面后重新运行 main.py；当前账号已停止，未自动转访客结账。"}
+{"时间": "2026-09-25T21:58:22+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjt94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "HTTPError"}

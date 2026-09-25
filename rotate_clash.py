@@ -83,10 +83,10 @@ def rotate_once(controller):
         try:
             result = controller.request("GET", path)
         except HTTPError as error:
-            if error.code != 504:
-                raise
+            if error.code not in {503, 504}:
+                raise RuntimeError(f"节点检测控制接口异常：HTTP {error.code}，停止轮转") from error
             error.close()
-            print(f"候选节点检测失败：{target}；HTTP 504，检查下一个。", flush=True)
+            print(f"候选节点检测失败：{target}；HTTP {error.code}，检查下一个。", flush=True)
             continue
         delay = result["delay"]
         if type(delay) is not int or delay < 0:
