@@ -11,7 +11,8 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
 import yaml
@@ -21,6 +22,8 @@ INTERVAL_SECONDS = 5 * 60
 PROXY_GROUP = "🚀 手动切换"
 # 空字符串表示不限制名称后缀；仍排除策略组、直连和拒绝项。
 NODE_NAME_SUFFIX = ""
+PROBE_URL = "https://secure11.www.apple.com.cn/"
+PROBE_TIMEOUT_MS = 2000
 VERGE_CONFIG = (
     Path(os.environ["APPDATA"])
     / "io.github.clash-verge-rev.clash-verge-rev"
@@ -69,7 +72,29 @@ def read_group(controller):
 def rotate_once(controller):
     current, nodes = read_group(controller)
     index = (nodes.index(current) + 1) % len(nodes) if current in nodes else 0
-    target = nodes[index]
+    for offset in range(len(nodes)):
+        target = nodes[(index + offset) % len(nodes)]
+        if target == current:
+            continue
+        print(f"检测候选节点：{target}（超时 {PROBE_TIMEOUT_MS} ms）", flush=True)
+        path = "/proxies/" + quote(target, safe="") + "/delay?" + urlencode(
+            {"url": PROBE_URL, "timeout": PROBE_TIMEOUT_MS}
+        )
+        try:
+            result = controller.request("GET", path)
+        except HTTPError as error:
+            if error.code != 504:
+                raise
+            error.close()
+            print(f"候选节点检测失败：{target}；HTTP 504，检查下一个。", flush=True)
+            continue
+        delay = result["delay"]
+        if type(delay) is not int or delay < 0:
+            raise ValueError("节点检测返回非法 delay，已停止")
+        print(f"候选节点检测通过：{target}；{delay} ms", flush=True)
+        break
+    else:
+        raise RuntimeError("所有候选节点检测失败，保留当前节点，停止轮转")
     # 在切换前记录旧连接，只断开指定组，避免删除其他应用的连接。
     connections = controller.request("GET", "/connections")["connections"]
     old_ids = [c["id"] for c in connections if PROXY_GROUP in c["chains"]]
