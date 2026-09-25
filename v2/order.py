@@ -15,6 +15,10 @@ CONTACT = ("checkout", "pickupContact", "selfPickupContact", "selfContact", "add
 STORE = ("checkout", "fulfillment", "pickupTab", "pickup", "storeLocator")
 
 
+class StoreSelection541(base.HTTP541Error):
+    """仅选店动作的 541 允许从购物袋重新进入结账。"""
+
+
 def browser_cookies(session, page):
     client = page.context.new_cdp_session(page)
     try:
@@ -210,25 +214,13 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
     def action(path, name, form):
         nonlocal page, model
         check_stopped()
-        retries = config["选店541重试次数"] if path == STORE and name == "select" else 0
-        for retry in range(retries + 1):
-            check_stopped()
-            try:
-                response = base.post_action(
-                    session, page.url, model, path, name, form, extra_headers=sticky_headers)
-            except base.HTTP541Error:
-                if retry == retries:
-                    if path == STORE and name == "select":
-                        raise RuntimeError(f"选店 HTTP 541；已用完 {retries} 次额外重试，停止该账号，未提交订单") from None
-                    raise
-                interval = config["选店541重试间隔秒"]
-                print(f"[{config['账号']}] 选店 HTTP 541；{interval} 秒后重试 {retry + 1}/{retries}。", flush=True)
-                if stop_event.wait(interval):
-                    raise RuntimeError("用户已停止选店重试；未提交订单") from None
-            else:
-                if retry:
-                    print(f"[{config['账号']}] 选店重试已收到响应，继续校验业务状态。", flush=True)
-                break
+        try:
+            response = base.post_action(
+                session, page.url, model, path, name, form, extra_headers=sticky_headers)
+        except base.HTTP541Error:
+            if path == STORE and name == "select":
+                raise StoreSelection541("选店 HTTP 541") from None
+            raise
         # 跳转及解析错误不重发原动作，尤其不把后续页面的 541 算成 select 失败。
         page = base.follow_navigation(session, response)
         fulfillment_action = name in ("selectFulfillmentLocationAction", "search", "select",

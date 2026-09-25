@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 from config.config import RUN, selected_accounts
-from order import base, checkout
-from session import ready_session
+from order import base, checkout, StoreSelection541
+from session import ready_session, checkout_in_browser
 from apple_store.request_log import account_name
 from apple_store.network import configure_rotation
 from rotate_clash import Controller, INTERVAL_SECONDS, read_group, rotate_once
@@ -26,9 +26,7 @@ def account_config(account):
     """账号配置 + 运行级开关，形成结账流程实际使用的 config。"""
     return {**account, "允许访客结账": RUN["允许访客结账"], "使用抓包代理": RUN["使用抓包代理"],
             "代理地址": RUN["代理地址"],
-            "缺货轮询间隔秒": RUN["缺货轮询间隔秒"],
-            "选店541重试次数": RUN["选店541重试次数"],
-            "选店541重试间隔秒": RUN["选店541重试间隔秒"]}
+            "缺货轮询间隔秒": RUN["缺货轮询间隔秒"]}
 
 
 def check_account(config):
@@ -57,12 +55,6 @@ def check_runtime():
     interval = RUN["缺货轮询间隔秒"]
     if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
         raise ValueError("RUN[缺货轮询间隔秒] 必须是有限正数")
-    retries = RUN["选店541重试次数"]
-    if type(retries) is not int or retries < 0:
-        raise ValueError("RUN[选店541重试次数] 必须是非负整数")
-    interval = RUN["选店541重试间隔秒"]
-    if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
-        raise ValueError("RUN[选店541重试间隔秒] 必须是有限正数")
 
 
 def check_accounts(accounts):
@@ -101,11 +93,18 @@ def run_account(config, stop_event):
                 try:
                     return checkout(session, browser, bag, config, product["partNumber"],
                                     prepared=entry, stop_event=stop_event)
-                except base.CheckoutExpired:
-                    # checkout 仅在进入联系人之前抛出此类型；创单及结果查询绝不重跑。
+                except (base.CheckoutExpired, StoreSelection541) as error:
+                    # 仅履约阶段的过期或 select 本身的 541；创单及结果查询绝不重跑。
                     if attempt:
-                        raise RuntimeError("库存等待期间结账再次过期；已恢复过一次，停止") from None
-            print(f"[{config['账号']}] 库存等待期间结账过期；重新验证并恢复一次。", flush=True)
+                        raise RuntimeError("库存等待期间结账再次过期或选店返回 541；已恢复过一次，停止") from None
+                    if stop_event.is_set():
+                        raise RuntimeError("用户已停止执行；未重新进入结账") from None
+                    if isinstance(error, StoreSelection541):
+                        print(f"[{config['账号']}] 选店 HTTP 541；从官网购物袋重新进入结账一次。", flush=True)
+                        total = base.require(base.read_model(bag), "shoppingCart", "summary", "d", "total")
+                        checkout_in_browser(session, browser, product["partNumber"], config["数量"], total)
+                    else:
+                        print(f"[{config['账号']}] 库存等待期间结账过期；重新验证并恢复一次。", flush=True)
     finally:
         account_name.reset(token)
 
