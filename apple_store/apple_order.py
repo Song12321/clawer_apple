@@ -4,6 +4,7 @@ import json
 import re
 import time
 import socket
+import ssl
 import subprocess
 import tempfile
 from contextlib import ExitStack, contextmanager
@@ -54,6 +55,36 @@ def is_reqable_available():
         return False
 
 
+def validate_proxy(proxy_url, capture_proxy=False):
+    if capture_proxy and proxy_url:
+        raise ValueError("Clash 代理与 Reqable 抓包不能同时启用")
+    parsed = urlsplit(proxy_url)
+    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1"
+            or not parsed.port or parsed.username or parsed.password
+            or parsed.path or parsed.query or parsed.fragment):
+        raise ValueError("代理地址须为 http://127.0.0.1:端口")
+
+
+def configure_proxy(session, proxy_url, capture_proxy=False):
+    validate_proxy(proxy_url, capture_proxy)
+    session.trust_env = False
+    session.proxies = {"http": proxy_url, "https": proxy_url}
+
+
+def require_browser_proxy(browser, proxy_url):
+    """读取本机 Chrome 启动参数，不操作账号业务页面。"""
+    validate_proxy(proxy_url)
+    page = browser.contexts[0].new_page()
+    try:
+        page.goto("chrome://version")
+        command = page.locator("#command_line").inner_text()
+        args = command.split()
+        if f"--proxy-server={proxy_url}" not in args or "--no-proxy-server" in args:
+            raise RuntimeError("已有 Chrome 未使用配置代理；请关闭该账号浏览器后重新运行 session.py")
+    finally:
+        page.close()
+
+
 def copy_browser_cookies(session, cookies):
     """保留浏览器 Cookie 的实际作用域和有效期，不输出或落盘凭据。"""
     session.cookies.clear()
@@ -96,8 +127,8 @@ CHROME_PATH = Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"
 
 
 @contextmanager
-def _handoff(page, product_url, *, include_page=False, capture_proxy=False):
-    """在已打开的页面上完成官网校验、履约实测与 Cookie/请求头交接。
+def _handoff(page, product_url, *, include_page=False, capture_proxy=False, proxy_url=None):
+    """在已打开的页面上完成官网校验与 Cookie/请求头交接。
 
     本函数不打开也不关闭浏览器：浏览器来自本次启动还是常驻会话由调用方决定。
     """
@@ -107,42 +138,20 @@ def _handoff(page, product_url, *, include_page=False, capture_proxy=False):
             window.__appleVerificationEvent = event.detail.id;
         });
     """)
-    fulfillment = []
-    def observe(response):
-        if urlsplit(response.url).path == "/shop/fulfillment-messages":
-            fulfillment.append(response)
-    page.on("response", observe)
     navigation = page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
     if navigation is None or navigation.status != 200:
         raise RuntimeError("浏览器商品页未返回 HTTP 200")
     page.wait_for_function("window.__appleVerificationEvent !== undefined", timeout=30000)
     if page.evaluate("window.__appleVerificationEvent") != "shld-result":
         raise RuntimeError("官网浏览器验证未通过")
-    deadline = time.monotonic() + 20
-    while not fulfillment and time.monotonic() < deadline:
-        page.wait_for_timeout(250)
-    if not fulfillment:
-        raise RuntimeError("未捕获页面履约请求")
-    url = apple_url(product_url, fulfillment[-1].url)
-    initial_fulfillment_status = fulfillment[-1].status
-    # 验证完成事件不足以证明会话可用，必须实际查询履约接口。
-    with page.expect_response(lambda r: urlsplit(r.url).path == "/shop/fulfillment-messages") as pending:
-        result = page.evaluate("""async url => {
-            const response = await fetch(url);
-            return {http: response.status,
-                business: response.status === 200 ? (await response.json()).head?.status : null};
-        }""", url)
-    if result["http"] != 200 or str(result["business"]) != "200":
-        raise RuntimeError(
-            f"浏览器初始化失败：页面原始履约 HTTP {initial_fulfillment_status}，"
-            f"验证后履约 HTTP {result['http']}，业务状态 {result['business']}；"
-            "尚未交接 requests，未加购"
-        )
-    headers = {k: v for k, v in pending.value.request.all_headers().items()
-               if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding")}
+    # 商品页配送提示不是结账前置契约；真实可用性由后续购物袋、购买摘要和结账校验。
+    headers = {k: v for k, v in navigation.request.all_headers().items()
+               if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")}
     with requests.Session() as session:
         session.trust_env = False
-        if capture_proxy:
+        if proxy_url is not None:
+            configure_proxy(session, proxy_url, capture_proxy)
+        elif capture_proxy:
             if not is_reqable_available():
                 raise RuntimeError("配置要求经 Reqable 抓包，但 127.0.0.1:9000 未监听")
             session.proxies = {"http": REQABLE_PROXY, "https": REQABLE_PROXY}
@@ -150,11 +159,11 @@ def _handoff(page, product_url, *, include_page=False, capture_proxy=False):
             print("Python 请求经 Reqable 抓包代理转发（配置：使用抓包代理）。", flush=True)
         else:
             print("Python 请求直连，未经 Reqable 代理；需要抓包时把配置「使用抓包代理」设为 True。", flush=True)
-        # 履约验证完成不代表异步 /shop/beacon/atb 已下发加购令牌。
+        # 页面校验完成不代表异步 /shop/beacon/atb 已下发加购令牌。
         # 交接前等待浏览器 Cookie 就绪；不重放 beacon，不编造令牌。
         deadline = time.monotonic() + 10
         while True:
-            copy_browser_cookies(session, read_page_cookies(page, [url, product_url]))
+            copy_browser_cookies(session, read_page_cookies(page, [product_url]))
             tokens = atb_tokens(session, product_url)
             if len(tokens) == 1 and tokens[0].split("|")[-1]:
                 break
@@ -164,16 +173,8 @@ def _handoff(page, product_url, *, include_page=False, capture_proxy=False):
                 state = "未下发" if not tokens else "令牌尾段为空"
                 raise ValueError(f"等待浏览器加购令牌 10 秒仍未就绪：as_atb {state}；未加购")
             page.wait_for_timeout(250)
-        session.headers["User-Agent"] = headers["user-agent"]
-        if "accept-language" in headers:
-            session.headers["Accept-Language"] = headers["accept-language"]
-        response = request(session, "GET", url, headers=headers)
-        if str(require(parse_json(response.text), "head", "status")) != "200":
-            raise RuntimeError("Python 履约查询业务失败；未加购")
-        check_business_errors(parse_json(response.text))
-        session.headers.update({k: v for k, v in navigation.request.all_headers().items()
-            if not k.startswith(":") and k not in ("cookie", "host", "accept-encoding", "referer")})
-        print(f"浏览器与 Python 履约查询均成功，会话交接已验证。会话交接合计 {time.perf_counter() - initialization_started:.3f}s", flush=True)
+        session.headers.update(headers)
+        print(f"浏览器页面与 Cookie 已交接，业务会话由后续请求验证。会话交接合计 {time.perf_counter() - initialization_started:.3f}s", flush=True)
         if include_page:
             product_page = requests.Response()
             product_page.status_code = navigation.status
@@ -196,18 +197,22 @@ def live_page(browser):
 
 @contextmanager
 def browser_session(playwright, product_url, *, include_page=False, profile_dir=None, cdp_endpoint=None,
-                    capture_proxy=False):
-    """打开或连接浏览器并完成会话交接；业务请求一律由 requests 直连。
+                    capture_proxy=False, proxy_url=None):
+    """打开或连接浏览器并完成会话交接；浏览器和 requests 共用显式代理（传入时）。
 
     cdp_endpoint 给定时连接常驻浏览器（v2/session.py），既不启动也不关闭它；
     profile_dir 给定时使用固定资料目录且不加 --incognito，登录态在目录内保留；
     两者都不给时保持原来的临时目录加隐身模式。
     """
+    if proxy_url is not None:
+        validate_proxy(proxy_url, capture_proxy)
     print("开始浏览器初始化与会话交接。", flush=True)
     if cdp_endpoint is not None:
         browser = playwright.chromium.connect_over_cdp(cdp_endpoint)
+        if proxy_url is not None:
+            require_browser_proxy(browser, proxy_url)
         print(f"已连接常驻浏览器会话：{cdp_endpoint}", flush=True)
-        with _handoff(live_page(browser), product_url, include_page=include_page, capture_proxy=capture_proxy) as result:
+        with _handoff(live_page(browser), product_url, include_page=include_page, capture_proxy=capture_proxy, proxy_url=proxy_url) as result:
             yield result
         return
     if not CHROME_PATH.is_file():
@@ -215,9 +220,7 @@ def browser_session(playwright, product_url, *, include_page=False, profile_dir=
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    # 浏览器一律直连：实测浏览器把导航交给 Reqable 代理时会卡在 about:blank 直到超时
-    # （同一资料目录改直连后商品页 1.3s 加载完成）。抓包仍由下面的 requests 会话走 Reqable 完成。
-    proxy_arg = "--no-proxy-server"
+    proxy_arg = f"--proxy-server={proxy_url}" if proxy_url is not None else "--no-proxy-server"
     with ExitStack() as resources:
         if profile_dir is None:
             profile = resources.enter_context(tempfile.TemporaryDirectory(prefix="apple-session-"))
@@ -251,7 +254,7 @@ def browser_session(playwright, product_url, *, include_page=False, profile_dir=
                         time.sleep(0.25)
             browser = playwright.chromium.connect_over_cdp(endpoint)
             with _handoff(browser.contexts[0].pages[0], product_url, include_page=include_page,
-                          capture_proxy=capture_proxy) as result:
+                          capture_proxy=capture_proxy, proxy_url=proxy_url) as result:
                 yield result
         finally:
             try:
@@ -329,6 +332,31 @@ def validate_config(config):
     apple_url("", config["商品页面"])
 
 
+def ssl_failure_detail(error):
+    """只提取 SSL 诊断字段，不输出可能含请求凭据的异常全文。"""
+    pending, seen, details = [error], set(), []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLError):
+            fields = [type(current).__name__]
+            for name in ("library", "reason"):
+                value = getattr(current, name, None)
+                if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", value):
+                    fields.append(f"{name}={value}")
+            code = getattr(current, "verify_code", None)
+            if isinstance(code, int):
+                fields.append(f"verify_code={code}")
+            details.append(", ".join(fields))
+        pending.extend(item for item in (
+            getattr(current, "reason", None), current.__cause__, current.__context__,
+            *current.args,
+        ) if isinstance(item, BaseException))
+    return "; ".join(dict.fromkeys(details)) or "SSLError（底层结构化原因不可用）"
+
+
 def request(session, method, url, *, headers=None, form=None):
     # 不自动重试或重定向：未知跳转不能被当作成功，创单也不能重复提交。
     url = apple_url("", url)
@@ -339,8 +367,8 @@ def request(session, method, url, *, headers=None, form=None):
                 timeout=30, allow_redirects=False,
             )
             response_timing(log, response)
-    except requests.exceptions.SSLError:
-        raise RuntimeError("HTTPS 证书校验失败；请检查 Reqable 根证书配置与当前代理") from None
+    except requests.exceptions.SSLError as error:
+        raise RuntimeError(f"HTTPS SSL 失败：{ssl_failure_detail(error)}；未自动重试") from None
     except requests.exceptions.ProxyError:
         raise RuntimeError("代理连接失败；请检查 Reqable 是否运行及代理端口") from None
     except requests.exceptions.Timeout:

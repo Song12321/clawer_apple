@@ -5,6 +5,8 @@ RUN 是全局策略；ACCOUNTS 里每个账号一份商品、门店、联系人�
 """
 from pathlib import Path
 
+from v2.config.iphone18_all_configs import IPHONE_18_CONFIGS
+
 BASE_DIR = Path(__file__).resolve().parent
 
 RUN = {
@@ -12,11 +14,12 @@ RUN = {
     "参与账号": ["a178"],
     # 结账入口被判为访客会话时：False 停在原地等你登录（推荐），True 才走访客表单+短信验证。
     "允许访客结账": False,
-    # 是否让 Python 请求经过 Reqable 抓包代理。实测该代理会间歇性卡住请求，默认直连保稳定；
-    # 需要抓包分析时改成 True（浏览器始终直连，不受此开关影响）。
+    # Python 和 Chrome 共用 Clash；无需 TUN，启动前先打开 Clash Verge。
+    "代理地址": "http://127.0.0.1:7897",
+    # 与上述显式代理互斥，当前保持 False。
     "使用抓包代理": False,
     # 各账号并行；确认缺货后等待这些秒数再查询，不叠加同一账号的请求。
-    "缺货轮询间隔秒": 31,
+    "缺货轮询间隔秒": 131,
     # 仅 select 请求遇到 HTTP 541 时重试；次数为首次失败后的额外尝试，0 表示不重试。
     "选店541重试次数": 15,
     "选店541重试间隔秒": 120,
@@ -31,13 +34,7 @@ ACCOUNTS = [
         "资料目录": str(BASE_DIR / "chrome-profile-a178"),
         "调试端口": 9333,
         # iPhone 18 Pro Max 256GB 冰川蓝色（familyType/颜色/容量取自官网选配数据）
-        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjy94ch/a",
-        "机型": "iphone18promax", "颜色": "glacier", "容量": "256gb", "数量": 1,
-        # "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-17/mg714ch/a",
-        # "机型": "iphone17",
-        # "颜色": "sage",
-        # "容量": "256gb",
-        # "数量": 1,
+        **IPHONE_18_CONFIGS["iPhone 18 Pro 256GB 勃艮第酒红色"],
         "自提门店": "R575", "自提门店名称": "Apple 武汉", "搜索地区": "湖北 武汉 江汉区",
         "省": "湖北", "市": "武汉", "区": "江汉区",
         # "自提门店": "R448", "自提门店名称": "Apple 王府井", "搜索地区": "北京 北京 朝阳区",
@@ -53,13 +50,8 @@ ACCOUNTS = [
         "资料目录": str(BASE_DIR / "chrome-profile-a9138"),
         "调试端口": 9138,
         # iPhone 18 Pro Max 256GB 冰川蓝色（familyType/颜色/容量取自官网选配数据）
-        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjy94ch/a",
-        "机型": "iphone18promax", "颜色": "glacier", "容量": "256gb", "数量": 1,
-        # "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-17/mg714ch/a",
-        # "机型": "iphone17",
-        # "颜色": "sage",
-        # "容量": "256gb",
-        # "数量": 1,
+        **IPHONE_18_CONFIGS["iPhone 18 Pro 256GB 勃艮第酒红色"],
+
         "自提门店": "R448", "自提门店名称": "Apple 王府井", "搜索地区": "北京 北京 朝阳区",
         "省": "北京", "市": "北京", "区": "朝阳区",
         "姓": "xing", "名": "ming", "手机号": "1389647245", "邮箱": "1389647245@163.com",

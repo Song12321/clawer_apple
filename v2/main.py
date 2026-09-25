@@ -10,7 +10,7 @@ from threading import Event
 from datetime import datetime
 from pathlib import Path
 
-from config import RUN, selected_accounts
+from config.config import RUN, selected_accounts
 from order import base, checkout
 from session import ready_session
 from apple_store.request_log import account_name
@@ -23,6 +23,7 @@ REQUIRED_KEYS = ("账号", "资料目录", "调试端口", "商品页面", "机�
 def account_config(account):
     """账号配置 + 运行级开关，形成结账流程实际使用的 config。"""
     return {**account, "允许访客结账": RUN["允许访客结账"], "使用抓包代理": RUN["使用抓包代理"],
+            "代理地址": RUN["代理地址"],
             "缺货轮询间隔秒": RUN["缺货轮询间隔秒"],
             "选店541重试次数": RUN["选店541重试次数"],
             "选店541重试间隔秒": RUN["选店541重试间隔秒"]}
@@ -47,6 +48,7 @@ def check_account(config):
 
 def check_runtime():
     """运行级开关校验。"""
+    base.validate_proxy(RUN["代理地址"], RUN["使用抓包代理"])
     for key in ("允许访客结账", "使用抓包代理"):
         if not isinstance(RUN[key], bool):
             raise ValueError(f"RUN[{key}] 必须是 True 或 False")

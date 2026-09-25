@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
-from config import RUN, selected_accounts
+from config.config import RUN, selected_accounts
 from contextlib import contextmanager, ExitStack
 from order import bag_page_for_checkout, browser_cookies
 from playwright.sync_api import sync_playwright
@@ -132,17 +132,13 @@ def login_state(endpoint):
 
 
 @contextmanager
-def prepared_session(endpoint, capture_proxy=False):
+def prepared_session(endpoint, capture_proxy=False, *, proxy_url):
     with sync_playwright() as pw:
         browser = pw.chromium.connect_over_cdp(endpoint)
+        base.require_browser_proxy(browser, proxy_url)
         page = prepared_page(browser)
         with base.requests.Session() as session:
-            session.trust_env = False
-            if capture_proxy:
-                if not base.is_reqable_available():
-                    raise RuntimeError("配置要求经 Reqable 抓包，但 127.0.0.1:9000 未监听")
-                session.proxies = {"http": base.REQABLE_PROXY, "https": base.REQABLE_PROXY}
-                session.verify = str(base.REQABLE_CA)
+            base.configure_proxy(session, proxy_url, capture_proxy)
             session.headers["User-Agent"] = page.evaluate("navigator.userAgent")
             session.headers["Accept-Language"] = page.evaluate("navigator.language")
             # 包括 secure 主机的 host-only Cookie，不能只取商品／履约域名。
@@ -167,21 +163,48 @@ def ready_session(account):
     with ExitStack() as stack:
         print(f"[{name}] 正在验证服务端结账会话。", flush=True)
         try:
-            ready = stack.enter_context(prepared_session(endpoint, account["使用抓包代理"]))
+            ready = stack.enter_context(prepared_session(endpoint, account["使用抓包代理"], proxy_url=account["代理地址"]))
         except CheckoutExpired:
             print(f"[{name}] 结账上下文缺失或已过期；复用账号登录态自动准备一次。", flush=True)
             prepare_checkout(account, endpoint, force=True)
-            ready = stack.enter_context(prepared_session(endpoint, account["使用抓包代理"]))
+            ready = stack.enter_context(prepared_session(endpoint, account["使用抓包代理"], proxy_url=account["代理地址"]))
             print(f"[{name}] 自动恢复成功，无需人工登录；继续执行。", flush=True)
         else:
             print(f"[{name}] 服务端结账会话有效；继续执行。", flush=True)
         yield ready
 
 
+def checkout_in_browser(session, page, sku, quantity, total):
+    """使用官网结账事件和浏览器会话准备入口；不提交订单。"""
+    browser_cookies(session, page)
+    response = page.goto(BAG_URL, wait_until="networkidle", timeout=30000)
+    if response is None or response.status != 200:
+        raise ValueError("浏览器购物袋未返回 HTTP 200")
+    model = base.read_model(page_response(page))
+    base.check_bag(model, sku, quantity)
+    if base.require(model, "shoppingCart", "summary", "d", "total") != total:
+        raise ValueError("浏览器购物袋金额与已验证购物袋不一致")
+    target = base.apple_url(page.url, base.require(model, "shoppingCart", "actions", "a", "checkout", "url"))
+    with page.expect_response(lambda r: r.url == target and r.request.method == "POST", timeout=30000) as pending:
+        page.locator('[id="shoppingCart.actions.checkout"]').click(timeout=30000)
+    response = pending.value
+    if response.status != 200:
+        raise RuntimeError(f"浏览器购物袋结账失败：HTTP {response.status}；未自动重试")
+    # 跨主机导航后旧响应体可能已不可读取，以最终页面验证结账结果。
+    page.wait_for_url(lambda url: (urlsplit(url).hostname or "").endswith(".apple.com.cn")
+                      and urlsplit(url).path in ("/shop/signIn", "/shop/checkout", "/shop/sorry/session_expired"),
+                      wait_until="domcontentloaded", timeout=30000)
+    page.bring_to_front()
+    if urlsplit(page.url).path != "/shop/signIn":
+        require_fulfillment(page_response(page))
+
+
 def prepare_checkout(account, endpoint, *, force=False):
-    config = {**account, "允许访客结账": False, "使用抓包代理": RUN["使用抓包代理"]}
+    config = {**account, "允许访客结账": False, "使用抓包代理": RUN["使用抓包代理"], "代理地址": RUN["代理地址"]}
     with sync_playwright() as pw:
         browser = pw.chromium.connect_over_cdp(endpoint)
+        base.validate_proxy(config["代理地址"], config["使用抓包代理"])
+        base.require_browser_proxy(browser, config["代理地址"])
         # 已准备的页面或尚待人工完成的认证页都不重新创建结账。
         for context in browser.contexts:
             for page in context.pages:
@@ -196,22 +219,17 @@ def prepare_checkout(account, endpoint, *, force=False):
                     return
         with base.browser_session(pw, config["商品页面"], include_page=True,
                                   cdp_endpoint=endpoint,
-                                  capture_proxy=config["使用抓包代理"]) as (session, page, product_page):
+                                  capture_proxy=config["使用抓包代理"], proxy_url=config["代理地址"]) as (session, page, product_page):
             product = base.select_product(product_page.content, config)
             bag = bag_page_for_checkout(session, product_page, config, product)
             model = base.read_model(bag)
-            item = base.check_bag(model, product["partNumber"], config["数量"])
-            entry = base.checkout_bag(session, bag, model, item)
-            entry_model = base.read_model(entry, allow_pickup_unavailable=True)
-            if "guestLogin" not in entry_model.get("signIn", {}):
-                require_fulfillment(entry)
-            # Python 创建结账后，将当次 Cookie 和站点产生的完整 URL 交给同一浏览器。
-            browser_cookies(session, page)
-            page.goto(entry.url, wait_until="domcontentloaded", timeout=30000)
-            page.bring_to_front()
+            base.check_bag(model, product["partNumber"], config["数量"])
+            checkout_in_browser(session, page, product["partNumber"], config["数量"],
+                                base.require(model, "shoppingCart", "summary", "d", "total"))
 
 
 def main():
+    base.validate_proxy(RUN["代理地址"], RUN["使用抓包代理"])
     if not base.CHROME_PATH.is_file():
         raise ValueError("找不到 Chrome，请检查 CHROME_PATH")
     accounts = selected_accounts()
@@ -227,7 +245,7 @@ def main():
                 process = spawn_chrome([
                     str(base.CHROME_PATH), f"--user-data-dir={profile}",
                     f"--remote-debugging-port={account['调试端口']}", "--remote-debugging-address=127.0.0.1",
-                    "--no-first-run", "--no-default-browser-check", "--no-proxy-server", BAG_URL,
+                    "--no-first-run", "--no-default-browser-check", f"--proxy-server={RUN['代理地址']}", BAG_URL,
                 ])
                 sessions.append((account["账号"], endpoint, process))
                 wait_ready(endpoint, process)
@@ -239,7 +257,7 @@ def main():
         print("另开终端运行 .venv/Scripts/python.exe v2/main.py；结账过期时会自动准备一次。", flush=True)
         print("保持窗口打开；main.py 启动后不要操作页面。Ctrl+C 只停止本脚本，保留浏览器。", flush=True)
         while True:
-            time.sleep(60)
+            time.sleep(300)
             summary = "，".join(f"{name}={login_state(endpoint)}" for name, endpoint, _ in sessions)
             print(f"[{time.strftime('%H:%M')}] {summary}", flush=True)
     except KeyboardInterrupt:
@@ -255,5 +273,3 @@ if __name__ == "__main__":
         main()
     except (ValueError, RuntimeError) as error:
         raise SystemExit("停止：" + str(error)) from None
-    except Exception as error:
-        raise SystemExit("停止：" + type(error).__name__) from None

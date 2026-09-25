@@ -11,38 +11,56 @@ from test_order import html_model_response, GUEST_ENTRY
 
 
 class HandoffTests(unittest.TestCase):
-    def test_prepare_transfers_cookies_before_opening_exact_login_url(self):
+    def test_browser_checkout_checks_bag_before_clicking(self):
         page = MagicMock()
         page.url = preparation.BAG_URL
-        browser = SimpleNamespace(contexts=[SimpleNamespace(pages=[page])])
-        pw = MagicMock()
-        pw.chromium.connect_over_cdp.return_value = browser
-        http = object()
-        product_page = object()
-        bag = object()
-        entry = html_model_response(
-            "https://secure9.www.apple.com.cn/shop/signIn?ssi=synthetic", GUEST_ENTRY)
-        events = []
+        page.goto.return_value.status = 200
+        model = {"shoppingCart": {"summary": {"d": {"total": "999"}},
+                 "actions": {"a": {"checkout": {"url": "/shop/bagx/checkout_now"}}}}}
+        response = page.expect_response.return_value.__enter__.return_value.value
+        response.status = 200
+        response.text.return_value = '{"head":{"status":302,"data":{}}}'
+        def arrive(*args, **kwargs):
+            page.url = "https://secure9.www.apple.com.cn/shop/signIn"
+        page.wait_for_url.side_effect = arrive
+        with patch.object(preparation, "browser_cookies") as cookies, \
+             patch.object(preparation, "page_response"), \
+             patch.object(preparation.base, "read_model", return_value=model), \
+             patch.object(preparation.base, "check_bag") as check, \
+             patch.object(preparation.base, "checkout_bag") as python_checkout:
+            preparation.checkout_in_browser("session", page, "TEST/A", 1, "999")
+        cookies.assert_called_once_with("session", page)
+        check.assert_called_once_with(model, "TEST/A", 1)
+        page.locator.return_value.click.assert_called_once()
+        python_checkout.assert_not_called()
 
-        @contextmanager
-        def browser_session(*args, **kwargs):
-            yield http, page, product_page
+    def test_browser_checkout_rejects_changed_total_before_click(self):
+        page = MagicMock()
+        page.goto.return_value.status = 200
+        with patch.object(preparation, "browser_cookies"), \
+             patch.object(preparation, "page_response"), \
+             patch.object(preparation.base, "read_model", return_value={
+                 "shoppingCart": {"summary": {"d": {"total": "1000"}}}}), \
+             patch.object(preparation.base, "check_bag"):
+            with self.assertRaisesRegex(ValueError, "金额"):
+                preparation.checkout_in_browser("session", page, "TEST/A", 1, "999")
+        page.locator.assert_not_called()
 
-        product_page = SimpleNamespace(content=b"synthetic")
-        with patch.object(preparation, "sync_playwright") as launch, \
-             patch.object(preparation.base, "browser_session", browser_session), \
-             patch.object(preparation.base, "select_product", return_value={"partNumber": "TEST/A"}), \
-             patch.object(preparation, "bag_page_for_checkout", return_value=bag), \
-             patch.object(preparation.base, "read_model", side_effect=[{}, GUEST_ENTRY]), \
-             patch.object(preparation.base, "check_bag", return_value="item-test"), \
-             patch.object(preparation.base, "checkout_bag", return_value=entry) as checkout_bag, \
-             patch.object(preparation, "browser_cookies", side_effect=lambda *args: events.append("cookies")):
-            launch.return_value.__enter__.return_value = pw
-            page.goto.side_effect = lambda *args, **kwargs: events.append("navigate")
-            preparation.prepare_checkout(account("a", 9333), "http://127.0.0.1:9333")
-        self.assertEqual(events, ["cookies", "navigate"])
-        checkout_bag.assert_called_once()
-        page.goto.assert_called_once_with(entry.url, wait_until="domcontentloaded", timeout=30000)
+    def test_browser_checkout_stops_on_412_without_navigation_retry(self):
+        page = MagicMock()
+        page.url = preparation.BAG_URL
+        page.goto.return_value.status = 200
+        page.expect_response.return_value.__enter__.return_value.value.status = 412
+        model = {"shoppingCart": {"summary": {"d": {"total": "999"}},
+                 "actions": {"a": {"checkout": {"url": "/shop/bagx/checkout_now"}}}}}
+        with patch.object(preparation, "browser_cookies"), \
+             patch.object(preparation, "page_response"), \
+             patch.object(preparation.base, "read_model", return_value=model), \
+             patch.object(preparation.base, "check_bag"):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 412"):
+                preparation.checkout_in_browser("session", page, "TEST/A", 1, "999")
+        page.locator.return_value.click.assert_called_once()
+        page.wait_for_url.assert_not_called()
 
     def test_handoff_reads_secure_cookies_and_rejects_expired_response(self):
         page = MagicMock()
