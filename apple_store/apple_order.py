@@ -16,8 +16,10 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Error as BrowserError
 if __package__:
+    from .network import fetch
     from .request_log import request_label, timing, response_timing
 else:
+    from network import fetch
     from request_log import request_label, timing, response_timing
 
 
@@ -362,7 +364,7 @@ def request(session, method, url, *, headers=None, form=None):
     url = apple_url("", url)
     try:
         with timing(request_label(method, url)) as log:
-            response = session.request(
+            response = fetch(session,
                 method, url, headers=headers, data=form,
                 timeout=30, allow_redirects=False,
             )

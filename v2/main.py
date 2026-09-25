@@ -14,6 +14,8 @@ from config.config import RUN, selected_accounts
 from order import base, checkout
 from session import ready_session
 from apple_store.request_log import account_name
+from apple_store.network import configure_rotation
+from rotate_clash import Controller, INTERVAL_SECONDS, read_group, rotate_once
 
 REQUIRED_KEYS = ("账号", "资料目录", "调试端口", "商品页面", "机型", "颜色", "容量", "数量", "自提门店",
                  "搜索地区", "省", "市", "区", "姓", "名", "手机号", "邮箱", "证件后四位",
@@ -134,6 +136,10 @@ def main():
     check_runtime()
     accounts = selected_accounts()
     check_accounts(accounts)
+    controller = Controller()
+    read_group(controller)
+    configure_rotation(lambda: rotate_once(controller), INTERVAL_SECONDS)
+    print(f"HTTP 请求共用一把锁；每 {INTERVAL_SECONDS} 秒在下一次请求前轮转。请勿另行运行 rotate_clash.py。", flush=True)
     print("本次下单账号：" + "、".join(account["账号"] for account in accounts), flush=True)
     print(f"启动 {len(accounts)} 个账号并行执行；各账号成功一单即停止，缺货独立轮询。", flush=True)
     results, failures = [], []
