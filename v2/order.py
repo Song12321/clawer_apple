@@ -287,14 +287,29 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
     selection_response = None
     def action(path, name, form):
         nonlocal page, model, selection_response
-        check_stopped()
-        try:
-            response = base.post_action(
-                session, page.url, model, path, name, form, extra_headers=sticky_headers)
-        except base.HTTP541Error:
-            if path == STORE and name == "select":
-                raise StoreSelection541("选店 HTTP 541") from None
-            raise
+        retries = 0
+        while True:
+            check_stopped()
+            try:
+                response = base.post_action(
+                    session, page.url, model, path, name, form, extra_headers=sticky_headers)
+                break
+            except base.NetworkRequestError as error:
+                if path != STORE or name != "select":
+                    raise
+                limit = config["选店网络重试次数"]
+                if retries >= limit:
+                    raise base.NetworkRequestError(
+                        f"选店{error}；已重试 {retries}/{limit} 次，停止") from None
+                retries += 1
+                interval = config["选店网络重试间隔秒"]
+                print(f"[{config['账号']}] 选店{error}；{interval} 秒后重试（{retries}/{limit}）。", flush=True)
+                if stop_event.wait(interval):
+                    raise RuntimeError("用户已停止选店网络重试；未提交订单") from None
+            except base.HTTP541Error:
+                if path == STORE and name == "select":
+                    raise StoreSelection541("选店 HTTP 541") from None
+                raise
         # 跳转及解析错误不重发原动作，尤其不把后续页面的 541 算成 select 失败。
         if path == STORE and name == "select":
             selection_response = response
@@ -313,6 +328,8 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
             browser.bring_to_front()
             raise RuntimeError("[需要人工认证] Apple 要求重新登录或双重认证；请在该账号窗口完成后重新运行 main.py")
         model = base.read_model(page, allow_pickup_unavailable=fulfillment_action)
+        if retries:
+            print(f"[{config['账号']}] 选店网络请求恢复，继续判断库存。", flush=True)
         # 登录态 Billing/Review 模型下发 x-as-actk；下发过一次后浏览器后续动作仍继续携带。
         action_key = model.get("meta", {}).get("h", {}).get("x-as-actk")
         if isinstance(action_key, str) and action_key:

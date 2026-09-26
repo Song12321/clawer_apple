@@ -39,6 +39,10 @@ class HTTP541Error(RuntimeError):
     """HTTP 541；由具体业务动作决定是否允许重试。"""
 
 
+class NetworkRequestError(RuntimeError):
+    """可由选店调用方有限重试的网络失败；消息不含请求凭据。"""
+
+
 def pickup_unavailable(model):
     checkout = model.get("checkout", {})
     locator = checkout.get("fulfillment", {}).get("pickupTab", {}).get("pickup", {}).get("storeLocator", {})
@@ -386,11 +390,11 @@ def request(session, method, url, *, headers=None, form=None):
     except requests.exceptions.SSLError as error:
         raise RuntimeError(f"HTTPS SSL 失败：{ssl_failure_detail(error)}；未自动重试") from None
     except requests.exceptions.ProxyError:
-        raise RuntimeError("代理连接失败；请检查 Reqable 是否运行及代理端口") from None
+        raise NetworkRequestError("代理连接或隧道建立失败（ProxyError）") from None
     except requests.exceptions.Timeout:
-        raise RuntimeError("请求超时；未自动重试") from None
+        raise NetworkRequestError("请求超时（Timeout）") from None
     except requests.exceptions.ConnectionError:
-        raise RuntimeError("网络连接失败；请检查网络与代理连接") from None
+        raise NetworkRequestError("网络连接中断或建立失败（ConnectionError）") from None
     except requests.RequestException:
         # requests 的原始异常可能包含带动态凭据的 URL，不直接打印。
         raise RuntimeError("请求失败或超时；未自动重试，需先确认服务端处理结果") from None
