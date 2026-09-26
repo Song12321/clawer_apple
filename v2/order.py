@@ -2,6 +2,7 @@
 import sys
 import time
 from copy import deepcopy
+from datetime import date, datetime
 from pathlib import Path
 from threading import Event
 from urllib.parse import parse_qsl, urlsplit
@@ -17,6 +18,48 @@ STORE = ("checkout", "fulfillment", "pickupTab", "pickup", "storeLocator")
 
 class StoreSelection541(base.HTTP541Error):
     """仅选店动作的 541 允许从购物袋重新进入结账。"""
+
+
+def pickup_time_fields(model):
+    """需要预约时，提交最新模型中最早日期的最早签到时段。"""
+    pickup = base.require(model, "checkout", "fulfillment", "pickupTab", "pickup")
+    if "timeSlot" not in pickup:
+        return {}
+    time_slot = pickup["timeSlot"]
+    enabled = base.require(time_slot, "d", "enableTimeSlotWindows")
+    if type(enabled) is not bool:
+        raise ValueError("自提时段启用状态不是布尔值")
+    if not enabled:
+        return {}
+    data = base.require(time_slot, "dateTimeSlots", "d")
+    dates = base.require(data, "pickUpDates")
+    if not dates:
+        raise ValueError("需要选择自提时段，但可选日期为空")
+    selected_date = min(dates, key=lambda day: date.fromisoformat(base.require(day, "date")))
+    day = base.require(selected_date, "dayOfMonth")
+    slots = [slot for group in base.require(data, "timeSlotWindows")
+             for slot in group.get(day, [])]
+    if not slots:
+        raise ValueError("最早自提日期没有可选时段")
+    selected = min(slots, key=lambda slot: datetime.strptime(
+        base.require(slot, "checkInStart"), "%I:%M %p").time())
+    fields = {key: base.require(data, key) for key in (
+        "displayStartTime", "displayEndTime", "timeSlotType", "isRecommended")}
+    fields.update(date=selected_date["date"], dayRadio=day)
+    for target, source in (("startTime", "checkInStart"), ("endTime", "checkInEnd"),
+                           ("timeSlotId", "SlotId"), ("signKey", "signKey"),
+                           ("timeZone", "timeZone"), ("timeSlotValue", "timeSlotValue")):
+        value = base.require(selected, source)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"自提时段字段缺失或无效：{source}")
+        fields[target] = value
+    if "isRestricted" not in selected:
+        raise ValueError("自提时段缺少字段：isRestricted")
+    restricted = selected["isRestricted"]
+    # HAR 中所选时段的 null 在浏览器表单中提交为空字符串。
+    fields["isRestricted"] = "" if restricted is None else restricted
+    prefix = "checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots."
+    return {prefix + key: value for key, value in fields.items()}
 
 
 def browser_cookies(session, page):
@@ -285,7 +328,13 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
         # 缺货时商品节点可能尚未生成；选店成功后、进入联系人之前严格核对。
         if prepared is not None:
             check_prepared_checkout(model, sku, total)
-        action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact", {fulfillment: "RETAIL", **fields})
+        time_fields = pickup_time_fields(model)
+        if time_fields:
+            time_prefix = "checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots."
+            print(f"[{name}] 自提签到时段：{time_fields[time_prefix + 'date']} "
+                  f"{time_fields[time_prefix + 'startTime']}–{time_fields[time_prefix + 'endTime']}", flush=True)
+        action(("checkout", "fulfillment"), "continueFromFulfillmentToPickupContact",
+               {fulfillment: "RETAIL", **fields, **time_fields})
         if base.pickup_unavailable(model):
             wait_stock("进入联系人前已无货")
             continue
