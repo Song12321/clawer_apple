@@ -352,28 +352,35 @@ def validate_config(config):
     apple_url("", config["商品页面"])
 
 
-def ssl_failure_detail(error):
-    """只提取 SSL 诊断字段，不输出可能含请求凭据的异常全文。"""
-    pending, seen, details = [error], set(), []
+def ssl_causes(error):
+    """遍历 requests/urllib3 包装中的底层 SSL 异常。"""
+    pending, seen = [error], set()
     while pending:
         current = pending.pop()
         if id(current) in seen:
             continue
         seen.add(id(current))
         if isinstance(current, ssl.SSLError):
-            fields = [type(current).__name__]
-            for name in ("library", "reason"):
-                value = getattr(current, name, None)
-                if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", value):
-                    fields.append(f"{name}={value}")
-            code = getattr(current, "verify_code", None)
-            if isinstance(code, int):
-                fields.append(f"verify_code={code}")
-            details.append(", ".join(fields))
+            yield current
         pending.extend(item for item in (
             getattr(current, "reason", None), current.__cause__, current.__context__,
             *current.args,
         ) if isinstance(item, BaseException))
+
+
+def ssl_failure_detail(error):
+    """只提取 SSL 诊断字段，不输出可能含请求凭据的异常全文。"""
+    details = []
+    for current in ssl_causes(error):
+        fields = [type(current).__name__]
+        for name in ("library", "reason"):
+            value = getattr(current, name, None)
+            if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", value):
+                fields.append(f"{name}={value}")
+        code = getattr(current, "verify_code", None)
+        if isinstance(code, int):
+            fields.append(f"verify_code={code}")
+        details.append(", ".join(fields))
     return "; ".join(dict.fromkeys(details)) or "SSLError（底层结构化原因不可用）"
 
 
@@ -388,6 +395,8 @@ def request(session, method, url, *, headers=None, form=None):
             )
             response_timing(log, response)
     except requests.exceptions.SSLError as error:
+        if any(isinstance(cause, ssl.SSLEOFError) for cause in ssl_causes(error)):
+            raise NetworkRequestError(f"HTTPS SSL 连接中断：{ssl_failure_detail(error)}") from None
         raise RuntimeError(f"HTTPS SSL 失败：{ssl_failure_detail(error)}；未自动重试") from None
     except requests.exceptions.ProxyError:
         raise NetworkRequestError("代理连接或隧道建立失败（ProxyError）") from None
