@@ -55,6 +55,8 @@ def check_runtime():
     interval = RUN["缺货轮询间隔秒"]
     if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
         raise ValueError("RUN[缺货轮询间隔秒] 必须是有限正数")
+    if type(RUN["结账恢复次数"]) is not int or RUN["结账恢复次数"] < 0:
+        raise ValueError("RUN[结账恢复次数] 必须是非负整数")
 
 
 def check_accounts(accounts):
@@ -82,7 +84,8 @@ def run_account(config, stop_event):
     """一个工作线程拥有一个账号的全部浏览器及 HTTP 对象。"""
     token = account_name.set(config["账号"])
     try:
-        for attempt in range(2):
+        recovery_limit = RUN["结账恢复次数"]
+        for attempt in range(recovery_limit + 1):
             if stop_event.is_set():
                 raise RuntimeError("用户已停止执行；未开始新的结账")
             with ready_session(config) as (session, browser, entry):
@@ -95,16 +98,16 @@ def run_account(config, stop_event):
                                     prepared=entry, stop_event=stop_event)
                 except (base.CheckoutExpired, StoreSelection541) as error:
                     # 仅履约阶段的过期或 select 本身的 541；创单及结果查询绝不重跑。
-                    if attempt:
-                        raise RuntimeError("库存等待期间结账再次过期或选店返回 541；已恢复过一次，停止") from None
+                    if attempt >= recovery_limit:
+                        raise RuntimeError(f"库存等待期间结账过期或选店返回 541；已恢复 {attempt}/{recovery_limit} 次，停止") from None
                     if stop_event.is_set():
                         raise RuntimeError("用户已停止执行；未重新进入结账") from None
                     if isinstance(error, StoreSelection541):
-                        print(f"[{config['账号']}] 选店 HTTP 541；从官网购物袋重新进入结账一次。", flush=True)
+                        print(f"[{config['账号']}] 选店 HTTP 541；从官网购物袋重新进入结账（恢复 {attempt + 1}/{recovery_limit} 次）。", flush=True)
                         total = base.require(base.read_model(bag), "shoppingCart", "summary", "d", "total")
                         checkout_in_browser(session, browser, product["partNumber"], config["数量"], total)
                     else:
-                        print(f"[{config['账号']}] 库存等待期间结账过期；重新验证并恢复一次。", flush=True)
+                        print(f"[{config['账号']}] 库存等待期间结账过期；重新验证并恢复（恢复 {attempt + 1}/{recovery_limit} 次）。", flush=True)
     finally:
         account_name.reset(token)
 
