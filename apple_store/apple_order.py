@@ -294,15 +294,29 @@ CONFIG = {
 SESSION_CONFIGS = [CONFIG]
 
 
+class ModelFieldError(ValueError):
+    """保留原报错，并携带不含字段值的定位信息。"""
+
+    def __init__(self, path, failed_path, parent, *, empty=False):
+        super().__init__(f"响应字段为空：{' / '.join(path)}" if empty else
+                         f"响应缺少字段：{' / '.join(path)}")
+        self.details = {"expected_path": list(path), "failed_path": list(failed_path),
+                        "parent_type": type(parent).__name__,
+                        "parent_keys": list(parent) if isinstance(parent, dict) else [],
+                        "reason": "null" if empty else "missing_or_wrong_type"}
+
+
 def require(data, *path):
     """按完整键名读取必填数据，键名本身可以含有点号。"""
     current = data
-    for key in path:
+    parent = data
+    for index, key in enumerate(path):
         if not isinstance(current, dict) or key not in current:
-            raise ValueError(f"响应缺少字段：{' / '.join(path)}")
+            raise ModelFieldError(path, path[:index + 1], current)
+        parent = current
         current = current[key]
     if current is None:
-        raise ValueError(f"响应字段为空：{' / '.join(path)}")
+        raise ModelFieldError(path, path, parent, empty=True)
     return current
 
 
@@ -520,7 +534,11 @@ def read_model(response, *, allow_pickup_unavailable=False):
         raise ValueError("不支持的响应 Content-Type")
     if not isinstance(model, dict):
         raise ValueError("页面模型必须是对象")
-    check_business_errors(model, allow_pickup_unavailable=allow_pickup_unavailable)
+    try:
+        check_business_errors(model, allow_pickup_unavailable=allow_pickup_unavailable)
+    except ValueError as error:
+        error.diagnostic_model = model
+        raise
     return model
 
 

@@ -1,6 +1,9 @@
 """单账号串行结账；缺货时查询同一门店，成功一单即返回。"""
 import sys
 import time
+import hashlib
+import hmac
+import secrets
 from copy import deepcopy
 from datetime import date, datetime
 from pathlib import Path
@@ -11,6 +14,30 @@ from playwright.sync_api import expect
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
 from sms import verify
+from diagnostics import record_selection
+from apple_store.request_log import account_name
+
+_DIAGNOSTIC_KEY = secrets.token_bytes(32)
+
+
+def log_bag(model, sku, quantity, stage):
+    items = model.get("shoppingCart", {}).get("items", {})
+    rows = [{"sku": row.get("d", {}).get("sku"),
+             "quantity": row.get("itemQuantity", {}).get("d", {}).get("quantity")}
+            for key, row in items.items() if key.startswith("item-")]
+    print(f"[{account_name.get()}] 购物袋诊断 | {stage} | 预期={sku} x {quantity} | 实际={rows}", flush=True)
+
+
+def log_session(session, page, stage):
+    # 随机密钥仅存在于当前进程；指纹不能作为凭据，也不能跨运行关联。
+    fingerprints = []
+    for cookie in session.cookies:
+        if cookie.name in ("as_atb", "as_pcts", "as_disa", "as_dc", "myacinfo", "dssid2"):
+            digest = hmac.new(_DIAGNOSTIC_KEY, cookie.value.encode(), hashlib.sha256).hexdigest()[:16]
+            fingerprints.append(f"{cookie.name}@{cookie.domain}{cookie.path}={digest}")
+    url = urlsplit(page.url)
+    print(f"[{account_name.get()}] 会话诊断 | {stage} | 页面={url.hostname}{url.path} | "
+          f"Cookie指纹(仅本进程可比)={sorted(fingerprints)}", flush=True)
 
 CONTACT = ("checkout", "pickupContact", "selfPickupContact", "selfContact", "address")
 STORE = ("checkout", "fulfillment", "pickupTab", "pickup", "storeLocator")
@@ -169,10 +196,13 @@ def bag_page_for_checkout(session, page, config, product):
     sku = base.require(product, "partNumber")
     bag_page = base.follow_navigation(session, base.request(
         session, "GET", base.apple_url(page.url, "/shop/bag")))
-    if check_existing_bag(base.read_model(bag_page), config, sku):
+    model = base.read_model(bag_page)
+    log_bag(model, sku, config["数量"], "准备阶段加购前")
+    if check_existing_bag(model, config, sku):
         print("购物袋里只有本配置的同一件商品，跳过加购。", flush=True)
         return bag_page
     _, form = base.fetch_summary(session, page, product)
+    print(f"[{account_name.get()}] 准备加购 | SKU={sku} | 数量={config['数量']}", flush=True)
     return base.add_to_bag(session, page, form)
 
 
@@ -254,8 +284,9 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
         raise ValueError("结账入口既不是访客登录页，也不是履约页")
 
     sticky_headers = {}
+    selection_response = None
     def action(path, name, form):
-        nonlocal page, model
+        nonlocal page, model, selection_response
         check_stopped()
         try:
             response = base.post_action(
@@ -265,7 +296,12 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
                 raise StoreSelection541("选店 HTTP 541") from None
             raise
         # 跳转及解析错误不重发原动作，尤其不把后续页面的 541 算成 select 失败。
+        if path == STORE and name == "select":
+            selection_response = response
+            model = {}  # 新响应未解析时不能把上一轮模型当作本轮证据。
         page = base.follow_navigation(session, response)
+        if path == STORE and name == "select":
+            selection_response = page
         fulfillment_action = name in ("selectFulfillmentLocationAction", "search", "select",
                                       "continueFromFulfillmentToPickupContact")
         path_now = urlsplit(page.url).path
@@ -307,28 +343,33 @@ def checkout(session, browser, bag_page, config, sku, *, prepared=None, stop_eve
         fields = {prefix + ".showAllStores": locator["d"]["showAllStores"],
                   prefix + ".selectStore": config["自提门店"], prefix + ".searchInput": config["搜索地区"]}
         fields.update({prefix + ".address.stateCitySelectorForCheckout." + k: v for k, v in address.items()})
-        action(STORE, "select", fields)
-        if base.pickup_unavailable(model):
-            wait_stock("直接选店返回缺货")
-            continue
-        stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
-        selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
-        if selected is None:
-            raise ValueError(f"选店响应未包含目标门店：{config['自提门店']}；不按缺货重试")
-        disabled = base.require(selected, "storeDisabled")
-        if type(disabled) is not bool:
-            raise ValueError("门店库存状态不是布尔值；停止")
-        if disabled:
-            wait_stock("当前不可取货")
-            continue
-        store_name = base.require(selected, "storeName")
-        print(f"[{name}] 第 {attempt} 次选店：{store_name} 可取货，继续结账。", flush=True)
-        if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
-            raise ValueError("服务端选中的自提门店与配置不一致")
-        # 缺货时商品节点可能尚未生成；选店成功后、进入联系人之前严格核对。
-        if prepared is not None:
-            check_prepared_checkout(model, sku, total)
-        time_fields = pickup_time_fields(model)
+        try:
+            action(STORE, "select", fields)
+            if base.pickup_unavailable(model):
+                wait_stock("直接选店返回缺货")
+                continue
+            stores = base.require(model, *STORE, "searchResults", "d", "retailStores")
+            selected = next((s for s in stores if s["storeId"] == config["自提门店"]), None)
+            if selected is None:
+                raise ValueError(f"选店响应未包含目标门店：{config['自提门店']}；不按缺货重试")
+            disabled = base.require(selected, "storeDisabled")
+            if type(disabled) is not bool:
+                raise ValueError("门店库存状态不是布尔值；停止")
+            if disabled:
+                wait_stock("当前不可取货")
+                continue
+            store_name = base.require(selected, "storeName")
+            print(f"[{name}] 第 {attempt} 次选店：{store_name} 可取货，继续结账。", flush=True)
+            if base.require(model, *STORE, "d", "selectStore") != config["自提门店"]:
+                raise ValueError("服务端选中的自提门店与配置不一致")
+            # 缺货时商品节点可能尚未生成；选店成功后、进入联系人之前严格核对。
+            if prepared is not None:
+                check_prepared_checkout(model, sku, total)
+            time_fields = pickup_time_fields(model)
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            record_selection(selection_response, model, config, attempt, error,
+                             base.pickup_unavailable, base.PICKUP_UNAVAILABLE)
+            raise
         if time_fields:
             time_prefix = "checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots."
             print(f"[{name}] 自提签到时段：{time_fields[time_prefix + 'date']} "

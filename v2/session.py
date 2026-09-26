@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
 from config.config import RUN, selected_accounts
 from contextlib import contextmanager, ExitStack
-from order import bag_page_for_checkout, browser_cookies
+from order import bag_page_for_checkout, browser_cookies, log_bag, log_session
+from apple_store.request_log import account_name
 from playwright.sync_api import sync_playwright
 
 BAG_URL = "https://www.apple.com.cn/shop/bag"
@@ -143,6 +144,7 @@ def prepared_session(endpoint, capture_proxy=False, *, proxy_url):
             session.headers["Accept-Language"] = page.evaluate("navigator.language")
             # 包括 secure 主机的 host-only Cookie，不能只取商品／履约域名。
             base.copy_browser_cookies(session, base.read_page_cookies(page, [page.url, BAG_URL]))
+            log_session(session, page, "接续结账：浏览器到requests")
             # 使用同一次请求取得的会话状态与 Fulfillment 模型接续结账。
             response = base.follow_navigation(session, base.request(session, "GET", page.url))
             if urlsplit(response.url).path == "/shop/signIn":
@@ -160,6 +162,7 @@ def ready_session(account):
     if endpoint is None:
         raise RuntimeError("常驻浏览器不可用；请先启动 session.py")
     name = account["账号"]
+    print(f"[{name}] 连接诊断 | CDP={endpoint} | 配置资料目录={Path(account['资料目录']).resolve()}", flush=True)
     with ExitStack() as stack:
         print(f"[{name}] 正在验证服务端结账会话。", flush=True)
         try:
@@ -181,6 +184,7 @@ def checkout_in_browser(session, page, sku, quantity, total):
     if response is None or response.status != 200:
         raise ValueError("浏览器购物袋未返回 HTTP 200")
     model = base.read_model(page_response(page))
+    log_bag(model, sku, quantity, "写回Cookie后浏览器购物袋")
     base.check_bag(model, sku, quantity)
     if base.require(model, "shoppingCart", "summary", "d", "total") != total:
         raise ValueError("浏览器购物袋金额与已验证购物袋不一致")
@@ -220,9 +224,11 @@ def prepare_checkout(account, endpoint, *, force=False):
         with base.browser_session(pw, config["商品页面"], include_page=True,
                                   cdp_endpoint=endpoint,
                                   capture_proxy=config["使用抓包代理"], proxy_url=config["代理地址"]) as (session, page, product_page):
+            log_session(session, page, "准备加购：浏览器到requests")
             product = base.select_product(product_page.content, config)
             bag = bag_page_for_checkout(session, product_page, config, product)
             model = base.read_model(bag)
+            log_bag(model, product["partNumber"], config["数量"], "准备阶段加购或复用后")
             base.check_bag(model, product["partNumber"], config["数量"])
             checkout_in_browser(session, page, product["partNumber"], config["数量"],
                                 base.require(model, "shoppingCart", "summary", "d", "total"))
@@ -251,7 +257,12 @@ def main():
                 wait_ready(endpoint, process)
             else:
                 sessions.append((account["账号"], endpoint, None))
-            prepare_checkout(account, endpoint)
+            print(f"[{account['账号']}] 连接诊断 | CDP={endpoint} | 配置资料目录={Path(account['资料目录']).resolve()}", flush=True)
+            token = account_name.set(account["账号"])
+            try:
+                prepare_checkout(account, endpoint)
+            finally:
+                account_name.reset(token)
             print(f"[{account['账号']}] {login_state(endpoint)}", flush=True)
         print("仅出现‘需要人工认证’时，请在对应窗口完成安全结账登录及双重认证。", flush=True)
         print("另开终端运行 .venv/Scripts/python.exe v2/main.py；结账过期时会自动准备一次。", flush=True)

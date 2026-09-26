@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config.config import RUN, selected_accounts
-from order import base, checkout, StoreSelection541
+from order import base, checkout, StoreSelection541, log_bag, log_session
 from session import ready_session, checkout_in_browser
 from apple_store.request_log import account_name
 from apple_store.network import configure_rotation
@@ -92,6 +92,7 @@ def run_account(config, stop_event):
                 product_page = base.follow_navigation(session, base.request(session, "GET", config["商品页面"]))
                 product = base.select_product(product_page.content, config)
                 bag = base.follow_navigation(session, base.request(session, "GET", "https://www.apple.com.cn/shop/bag"))
+                log_bag(base.read_model(bag), product["partNumber"], config["数量"], "main入口requests购物袋")
                 base.check_bag(base.read_model(bag), product["partNumber"], config["数量"])
                 try:
                     return checkout(session, browser, bag, config, product["partNumber"],
@@ -103,6 +104,7 @@ def run_account(config, stop_event):
                     if stop_event.is_set():
                         raise RuntimeError("用户已停止执行；未重新进入结账") from None
                     if isinstance(error, StoreSelection541):
+                        log_session(session, browser, "541恢复前：requests待写回浏览器")
                         print(f"[{config['账号']}] 选店 HTTP 541；从官网购物袋重新进入结账（恢复 {attempt + 1}/{recovery_limit} 次）。", flush=True)
                         total = base.require(base.read_model(bag), "shoppingCart", "summary", "d", "total")
                         checkout_in_browser(session, browser, product["partNumber"], config["数量"], total)
