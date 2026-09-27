@@ -39,3 +39,5 @@
 {"时间": "2026-09-26T17:29:08+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjyc4ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "用户已停止缺货轮询；未提交订单"}
 {"时间": "2026-09-26T19:48:03+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjy94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "HTTPS SSL 失败：SSLEOFError；未自动重试"}
 {"时间": "2026-09-26T22:52:32+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjy94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "选店HTTPS SSL 连接中断：SSLEOFError；已重试 3/3 次，停止"}
+{"时间": "2026-09-27T00:22:49+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjy94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "[需要人工认证] Apple 要求安全结账登录或双重认证。请在该账号浏览器窗口完成认证，停在配送／自提页面后重新运行 main.py；当前账号已停止，未自动转访客结账。"}
+{"时间": "2026-09-27T00:24:34+08:00", "账号": "a178", "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjy94ch/a", "门店": "R575", "数量": 1, "状态": "失败", "失败原因": "requests 收到 HTTP 541：POST secure8.www.apple.com.cn/shop/checkoutx/fulfillment，动作 selectFulfillmentLocationAction；未取得有效业务响应。"}
