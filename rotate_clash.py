@@ -19,7 +19,7 @@ import yaml
 
 
 INTERVAL_SECONDS = 1 * 60 # 5
-PROXY_GROUP =  "节点选择"  #"追云加速"#"🚀 手动切换" #冷却了22min 可以继续
+PROXY_GROUP =  "🚀 手动切换"  #"追云加速"#"🚀 手动切换" #冷却了22min 可以继续
 # 空字符串表示不限制名称后缀；仍排除策略组、直连和拒绝项。
 NODE_NAME_SUFFIX = ""
 PROBE_URL = "https://secure11.www.apple.com.cn/"
