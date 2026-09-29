@@ -32,8 +32,8 @@ ACCOUNTS = [
     {
         "账号": "a178",
         # 沿用 v2/chrome-profile：这是已有登录态所在目录，不要与其它账号共用。
-        "资料目录": str(BASE_DIR / "chrome-profile-a178"),
-        "调试端口": 9333,
+        "资料目录": str(BASE_DIR / "chrome-profile-a178-401"),
+        "调试端口": 9401,
         # iPhone 18 Pro Max 256GB 冰川蓝色（familyType/颜色/容量取自官网选配数据）
         **IPHONE_18_CONFIGS["iPhone 18 Pro Max 256GB 冰川蓝色"],
         "自提门店": "R575", "自提门店名称": "Apple 武汉", "搜索地区": "湖北 武汉 江汉区",

@@ -6,6 +6,7 @@
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError
@@ -18,8 +19,9 @@ import requests
 
 INTERVAL_SECONDS = 1 * 60
 PROXY_GROUP =  "追云加速"  #"追云加速"#"🚀 手动切换" #冷却了22min 可以继续
-# 空字符串表示不限制名称后缀；仍排除策略组、直连和拒绝项。
+# 空字符串表示不限制名称后缀；仍排除香港节点、策略组、直连和拒绝项。
 NODE_NAME_SUFFIX = ""
+HONG_KONG_NAME = re.compile(r"香港|🇭🇰|hong[\s_-]*kong|(?<![a-z])hk(?![a-z])", re.IGNORECASE)
 PROBE_URL = "https://secure11.www.apple.com.cn/"
 PROBE_TIMEOUT_MS = 2000
 CHECK_URL = "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjyc4ch/a"
@@ -61,6 +63,7 @@ def read_group(controller):
     nodes = [
         name for name in group["all"]
         if name.endswith(NODE_NAME_SUFFIX) and "all" not in proxies[name]
+        and not HONG_KONG_NAME.search(name)
         and proxies[name]["type"].lower() not in {"direct", "reject", "rejectdrop"}
     ]
     if len(nodes) < 2:
