@@ -388,12 +388,10 @@ def request(session, method, url, *, headers=None, form=None):
     # 不自动重试或重定向：未知跳转不能被当作成功，创单也不能重复提交。
     url = apple_url("", url)
     try:
-        with timing(request_label(method, url)) as log:
-            response = fetch(session,
-                method, url, headers=headers, data=form,
-                timeout=30, allow_redirects=False,
-            )
-            response_timing(log, response)
+        response = fetch(session,
+            method, url, headers=headers, data=form,
+            timeout=30, allow_redirects=False,
+        )
     except requests.exceptions.SSLError as error:
         if any(isinstance(cause, ssl.SSLEOFError) for cause in ssl_causes(error)):
             raise NetworkRequestError(f"HTTPS SSL 连接中断：{ssl_failure_detail(error)}") from None

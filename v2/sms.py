@@ -3,7 +3,7 @@ from urllib.parse import urlencode, urlsplit
 
 import requests
 from apple_store.network import fetch
-from apple_store.request_log import request_label, timing, response_timing
+from apple_store.request_log import timing
 
 
 def verify(store_session, page_url, data, phone):
@@ -18,14 +18,13 @@ def verify(store_session, page_url, data, phone):
     })
     with requests.Session() as identity:
         identity.trust_env = False
+        identity.proxies.update(store_session.proxies)
         identity.headers.update({"User-Agent": store_session.headers["User-Agent"],
                                  "Accept": "application/json"})
 
         def send(method, url, **kwargs):
             try:
-                with timing(request_label(method, url)) as log:
-                    response = fetch(identity, method, url, timeout=30, allow_redirects=False, **kwargs)
-                    response_timing(log, response)
+                response = fetch(identity, method, url, timeout=30, allow_redirects=False, **kwargs)
             except requests.RequestException:
                 raise RuntimeError("Identity request failed; no automatic retry") from None
             if response.status_code != 200:

@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 RUN = {
     # session.py 和 main.py 共用："all" 表示全部；指定账号用列表，如 ["a138"]。
-    "参与账号": ["customer-vx-Navy-new9555"],
+    "参与账号": ["a178"],
     # 结账入口被判为访客会话时：False 停在原地等你登录（推荐），True 才走访客表单+短信验证。
     "允许访客结账": False,
     # Python 和 Chrome 共用 Clash；无需 TUN，启动前先打开 Clash Verge。
@@ -35,7 +35,7 @@ ACCOUNTS = [
         "资料目录": str(BASE_DIR / "chrome-profile-a178"),
         "调试端口": 9333,
         # iPhone 18 Pro Max 256GB 冰川蓝色（familyType/颜色/容量取自官网选配数据）
-        **IPHONE_18_CONFIGS["iPhone 18 Pro Max 512GB 银色"],
+        **IPHONE_18_CONFIGS["iPhone 18 Pro Max 256GB 冰川蓝色"],
         "自提门店": "R575", "自提门店名称": "Apple 武汉", "搜索地区": "湖北 武汉 江汉区",
         "省": "湖北", "市": "武汉", "区": "江汉区",
         # "自提门店": "R448", "自提门店名称": "Apple 王府井", "搜索地区": "北京 北京 朝阳区",

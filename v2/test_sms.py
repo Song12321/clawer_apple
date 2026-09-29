@@ -22,7 +22,9 @@ class SmsTests(unittest.TestCase):
             return response
 
         with requests.Session() as store, patch("sms.requests.Session.request", request), \
-                patch("builtins.input", return_value="123456"):
+                patch("builtins.input", return_value="123456"), \
+                patch("apple_store.network._coordinate"):
+            store.proxies = {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"}
             return verify(store, "https://secure7.www.apple.com.cn/shop/checkout", data, "test-phone")
 
     def test_session_rotation_and_token(self):
