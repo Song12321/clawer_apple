@@ -1,43 +1,53 @@
 """由共用 fetch 在跨进程锁内轮转；不再独立定时运行。
 
-依赖 PyYAML。控制地址和凭据只从本机 Verge 配置读取，不复制凭据。
+依赖 PyYAML。控制地址、证书和凭据只从本机毛熊 VPN 配置读取，不复制凭据。
 仅影响经过 PROXY_GROUP 的流量；不同节点不保证拥有不同公网 IP。
 """
 
 import json
 import os
 import re
+import ssl
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import quote, urlencode
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 import yaml
 import requests
 
 
 INTERVAL_SECONDS = 1 * 60
-PROXY_GROUP =  "追云加速"  #"追云加速"#"🚀 手动切换" #冷却了22min 可以继续
-# 空字符串表示不限制名称后缀；仍排除香港节点、策略组、直连和拒绝项。
+PROXY_GROUP = "🌍 国外网站"
+# 空字符串表示不限制名称后缀；仍排除港澳台节点、策略组、直连和拒绝项。
 NODE_NAME_SUFFIX = ""
-HONG_KONG_NAME = re.compile(r"香港|🇭🇰|hong[\s_-]*kong|(?<![a-z])hk(?![a-z])", re.IGNORECASE)
-PROBE_URL = "https://secure11.www.apple.com.cn/"
+EXCLUDED_REGION_NAME = re.compile(
+    r"香港|台湾|臺灣|台灣|澳门|澳門|🇭🇰|🇹🇼|🇲🇴|"
+    r"hong[\s_-]*kong|tai[\s_-]*wan|maca[uo]|"
+    r"(?<![a-z])(?:hk|tw|mo)(?![a-z])", re.IGNORECASE)
 PROBE_TIMEOUT_MS = 2000
 CHECK_URL = "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjyc4ch/a"
-VERGE_CONFIG = (
+PROBE_URL = CHECK_URL
+MIHOMO_CONFIG = (
     Path(os.environ["APPDATA"])
-    / "io.github.clash-verge-rev.clash-verge-rev"
-    / "clash-verge.yaml"
+    / "maoxiong-vpn" / "mihomo" / "config.yaml"
 )
 
 
 class Controller:
     def __init__(self):
-        config = yaml.safe_load(VERGE_CONFIG.read_text(encoding="utf-8"))
-        self.url = "http://" + config["external-controller"]
+        config = yaml.safe_load(MIHOMO_CONFIG.read_text(encoding="utf-8"))
+        endpoint = urlsplit("https://" + config["external-controller-tls"])
+        if (endpoint.hostname != "127.0.0.1" or not endpoint.port
+                or endpoint.username or endpoint.password or endpoint.path
+                or endpoint.query or endpoint.fragment):
+            raise ValueError("毛熊控制接口须监听 127.0.0.1:端口")
+        # 本机控制证书的 SAN 是 localhost；保持证书链和主机名验证。
+        self.url = f"https://localhost:{endpoint.port}"
         self.secret = config["secret"]
-        self.opener = build_opener(ProxyHandler({}))
+        context = ssl.create_default_context(cafile=config["tls"]["certificate"])
+        self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context))
 
     def request(self, method, path, payload=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -63,7 +73,7 @@ def read_group(controller):
     nodes = [
         name for name in group["all"]
         if name.endswith(NODE_NAME_SUFFIX) and "all" not in proxies[name]
-        and not HONG_KONG_NAME.search(name)
+        and not EXCLUDED_REGION_NAME.search(name)
         and proxies[name]["type"].lower() not in {"direct", "reject", "rejectdrop"}
     ]
     if len(nodes) < 2:
