@@ -168,4 +168,47 @@ IPHONE_18_CONFIGS = {
         "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjyk4ch/a",
         "机型": "iphone18promax", "颜色": "black", "容量": "2tb", "数量": 1,
     },
+
+    # iPhone Duo（2026-10-15 核对）：https://www.apple.com.cn/shop/buy-iphone/iphone-duo
+    # 2026-10-16 20:00 预购，2026-10-23 发售；参数来自 productSelectionData.products。
+    # MK2M4CH/A
+    "iPhone Duo 256GB 星光白色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2m4ch/a",
+        "机型": "iphoneduo", "颜色": "starwhite", "容量": "256gb", "数量": 1,
+    },
+    # MK2P4CH/A
+    "iPhone Duo 512GB 星光白色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2p4ch/a",
+        "机型": "iphoneduo", "颜色": "starwhite", "容量": "512gb", "数量": 1,
+    },
+    # MK2T4CH/A
+    "iPhone Duo 1TB 星光白色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2t4ch/a",
+        "机型": "iphoneduo", "颜色": "starwhite", "容量": "1tb", "数量": 1,
+    },
+    # MK2V4CH/A
+    "iPhone Duo 2TB 星光白色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2v4ch/a",
+        "机型": "iphoneduo", "颜色": "starwhite", "容量": "2tb", "数量": 1,
+    },
+    # MK2N4CH/A
+    "iPhone Duo 256GB 夜空色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2n4ch/a",
+        "机型": "iphoneduo", "颜色": "nightsky", "容量": "256gb", "数量": 1,
+    },
+    # MK2Q4CH/A
+    "iPhone Duo 512GB 夜空色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2q4ch/a",
+        "机型": "iphoneduo", "颜色": "nightsky", "容量": "512gb", "数量": 1,
+    },
+    # MK2U4CH/A
+    "iPhone Duo 1TB 夜空色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2u4ch/a",
+        "机型": "iphoneduo", "颜色": "nightsky", "容量": "1tb", "数量": 1,
+    },
+    # MK2W4CH/A
+    "iPhone Duo 2TB 夜空色": {
+        "商品页面": "https://www.apple.com.cn/shop/buy-iphone/iphone-duo/mk2w4ch/a",
+        "机型": "iphoneduo", "颜色": "nightsky", "容量": "2tb", "数量": 1,
+    },
 }

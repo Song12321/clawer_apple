@@ -28,6 +28,9 @@ RUN = {
     "结果文件": str(BASE_DIR / "results.jsonl"),
 }
 
+# 抢购 iPhone Duo：将目标账号的 **IPHONE_18_CONFIGS[...] 一行替换为例如：
+# **IPHONE_18_CONFIGS["iPhone Duo 256GB 星光白色"],
+# Duo 全部 8 种颜色/容量组合见 iphone18_all_configs.py；按实际购买意愿选择。
 ACCOUNTS = [
     {
         "账号": "a178",
@@ -35,7 +38,7 @@ ACCOUNTS = [
         "资料目录": str(BASE_DIR / "chrome-profile-a178-401"),
         "调试端口": 9401,
         # iPhone 18 Pro Max 256GB 冰川蓝色（familyType/颜色/容量取自官网选配数据）
-        **IPHONE_18_CONFIGS["iPhone 18 Pro Max 256GB 冰川蓝色"],
+        **IPHONE_18_CONFIGS["iPhone Duo 256GB 星光白色"],
         "自提门店": "R575", "自提门店名称": "Apple 武汉", "搜索地区": "湖北 武汉 江汉区",
         "省": "湖北", "市": "武汉", "区": "江汉区",
         # "自提门店": "R448", "自提门店名称": "Apple 王府井", "搜索地区": "北京 北京 朝阳区",
