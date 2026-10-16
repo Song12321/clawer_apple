@@ -133,7 +133,7 @@ CHROME_PATH = Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"
 
 
 @contextmanager
-def _handoff(page, product_url, *, include_page=False, capture_proxy=False, proxy_url=None):
+def _handoff(page, product_url, *, include_page=False, capture_proxy=False, proxy_url=None, entry_loader=None):
     """在已打开的页面上完成官网校验与 Cookie/请求头交接。
 
     本函数不打开也不关闭浏览器：浏览器来自本次启动还是常驻会话由调用方决定。
@@ -144,7 +144,8 @@ def _handoff(page, product_url, *, include_page=False, capture_proxy=False, prox
             window.__appleVerificationEvent = event.detail.id;
         });
     """)
-    navigation = page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+    navigation = (entry_loader(page, product_url) if entry_loader is not None else
+                  page.goto(product_url, wait_until="domcontentloaded", timeout=30000))
     if navigation is None or navigation.status != 200:
         raise RuntimeError("浏览器商品页未返回 HTTP 200")
     page.wait_for_function("window.__appleVerificationEvent !== undefined", timeout=30000)
@@ -203,7 +204,7 @@ def live_page(browser):
 
 @contextmanager
 def browser_session(playwright, product_url, *, include_page=False, profile_dir=None, cdp_endpoint=None,
-                    capture_proxy=False, proxy_url=None):
+                    capture_proxy=False, proxy_url=None, entry_loader=None):
     """打开或连接浏览器并完成会话交接；浏览器和 requests 共用显式代理（传入时）。
 
     cdp_endpoint 给定时连接常驻浏览器（v2/session.py），既不启动也不关闭它；
@@ -218,7 +219,7 @@ def browser_session(playwright, product_url, *, include_page=False, profile_dir=
         if proxy_url is not None:
             require_browser_proxy(browser, proxy_url)
         print(f"已连接常驻浏览器会话：{cdp_endpoint}", flush=True)
-        with _handoff(live_page(browser), product_url, include_page=include_page, capture_proxy=capture_proxy, proxy_url=proxy_url) as result:
+        with _handoff(live_page(browser), product_url, include_page=include_page, capture_proxy=capture_proxy, proxy_url=proxy_url, entry_loader=entry_loader) as result:
             yield result
         return
     if not CHROME_PATH.is_file():
@@ -260,7 +261,7 @@ def browser_session(playwright, product_url, *, include_page=False, profile_dir=
                         time.sleep(0.25)
             browser = playwright.chromium.connect_over_cdp(endpoint)
             with _handoff(browser.contexts[0].pages[0], product_url, include_page=include_page,
-                          capture_proxy=capture_proxy, proxy_url=proxy_url) as result:
+                          capture_proxy=capture_proxy, proxy_url=proxy_url, entry_loader=entry_loader) as result:
                 yield result
         finally:
             try:

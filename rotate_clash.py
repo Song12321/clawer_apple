@@ -4,6 +4,8 @@
 仅影响经过 PROXY_GROUP 的流量；不同节点不保证拥有不同公网 IP。
 """
 
+from http.client import HTTPSConnection
+import socket
 import json
 import os
 import re
@@ -18,7 +20,7 @@ import yaml
 import requests
 
 
-INTERVAL_SECONDS = 1 * 60
+INTERVAL_SECONDS = 1 * 20
 PROXY_GROUP = "🌍 国外网站"
 # 空字符串表示不限制名称后缀；仍排除港澳台节点、策略组、直连和拒绝项。
 NODE_NAME_SUFFIX = ""
@@ -26,13 +28,33 @@ EXCLUDED_REGION_NAME = re.compile(
     r"香港|台湾|臺灣|台灣|澳门|澳門|🇭🇰|🇹🇼|🇲🇴|"
     r"hong[\s_-]*kong|tai[\s_-]*wan|maca[uo]|"
     r"(?<![a-z])(?:hk|tw|mo)(?![a-z])", re.IGNORECASE)
-PROBE_TIMEOUT_MS = 2000
+PROBE_TIMEOUT_MS = 1000
 CHECK_URL = "https://www.apple.com.cn/shop/buy-iphone/iphone-18-pro/mjyc4ch/a"
 PROBE_URL = CHECK_URL
 MIHOMO_CONFIG = (
     Path(os.environ["APPDATA"])
     / "maoxiong-vpn" / "mihomo" / "config.yaml"
 )
+
+
+class LoopbackHTTPSConnection(HTTPSConnection):
+    """TCP 固定 IPv4 回环；HTTPS 的 SNI 和证书主机名仍为 localhost。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = self._connect_loopback
+
+    @staticmethod
+    def _connect_loopback(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+        if address[0] != "localhost":
+            raise ValueError("控制连接只允许 localhost")
+        return socket.create_connection(("127.0.0.1", address[1]), timeout, source_address)
+
+
+class LoopbackHTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(LoopbackHTTPSConnection, request,
+                            context=self._context, check_hostname=self._check_hostname)
 
 
 class Controller:
@@ -47,7 +69,7 @@ class Controller:
         self.url = f"https://localhost:{endpoint.port}"
         self.secret = config["secret"]
         context = ssl.create_default_context(cafile=config["tls"]["certificate"])
-        self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context))
+        self.opener = build_opener(ProxyHandler({}), LoopbackHTTPSHandler(context=context))
 
     def request(self, method, path, payload=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -101,39 +123,44 @@ def check_product_page(proxy_url):
     return True
 
 
-def rotate_once(controller, proxy_url):
+def rotate_once(controller, proxy_url, *, entry=False):
     current, nodes = read_group(controller)
     index = (nodes.index(current) + 1) % len(nodes) if current in nodes else 0
     for offset in range(len(nodes)):
         target = nodes[(index + offset) % len(nodes)]
         if target == current:
             continue
-        print(f"检测候选节点：{target}（超时 {PROBE_TIMEOUT_MS} ms）", flush=True)
-        path = "/proxies/" + quote(target, safe="") + "/delay?" + urlencode(
-            {"url": PROBE_URL, "timeout": PROBE_TIMEOUT_MS}
-        )
-        try:
-            result = controller.request("GET", path)
-        except HTTPError as error:
-            if error.code not in {503, 504}:
-                raise RuntimeError(f"节点检测控制接口异常：HTTP {error.code}，停止轮转") from error
-            error.close()
-            print(f"候选节点检测失败：{target}；HTTP {error.code}，检查下一个。", flush=True)
-            continue
-        delay = result["delay"]
-        if type(delay) is not int or delay < 0:
-            raise ValueError("节点检测返回非法 delay，已停止")
-        print(f"候选节点检测通过：{target}；{delay} ms", flush=True)
+        if not entry:
+            print(f"检测候选节点：{target}（超时 {PROBE_TIMEOUT_MS} ms）", flush=True)
+            path = "/proxies/" + quote(target, safe="") + "/delay?" + urlencode(
+                {"url": PROBE_URL, "timeout": PROBE_TIMEOUT_MS}
+            )
+            try:
+                result = controller.request("GET", path)
+            except HTTPError as error:
+                if error.code not in {503, 504}:
+                    raise RuntimeError(f"节点检测控制接口异常：HTTP {error.code}，停止轮转") from error
+                error.close()
+                print(f"候选节点检测失败：{target}；HTTP {error.code}，检查下一个。", flush=True)
+                continue
+            delay = result["delay"]
+            if type(delay) is not int or delay < 0:
+                raise ValueError("节点检测返回非法 delay，已停止")
+            print(f"候选节点检测通过：{target}；{delay} ms", flush=True)
         connections = controller.request("GET", "/connections")["connections"]
         old_ids = [c["id"] for c in connections if PROXY_GROUP in c["chains"]]
         group_path = "/proxies/" + quote(PROXY_GROUP, safe="")
         controller.request("PUT", group_path, {"name": target})
         if controller.request("GET", group_path)["now"] != target:
             raise RuntimeError("切换后代理组状态不匹配，已停止")
+        print(f"正在关闭 {len(old_ids)} 条旧代理连接。", flush=True)
         for connection_id in old_ids:
             controller.request("DELETE", "/connections/" + quote(connection_id, safe=""))
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S} 已切换到 {target}；"
               f"已关闭 {len(old_ids)} 条旧连接；开始商品页验证", flush=True)
+        if entry:
+            print("入口轮转完成；由当前浏览器验证目标商品页", flush=True)
+            return
         if check_product_page(proxy_url):
             print(f"节点商品页验证通过：{target}；轮转完成", flush=True)
             return

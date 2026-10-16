@@ -1,4 +1,7 @@
 """准备真实结账上下文，人工认证后保持浏览器供 main.py 接续。"""
+import math
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import subprocess
 import sys
 import time
@@ -8,11 +11,12 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apple_store import apple_order as base
+from apple_store import network
 from config.config import RUN, selected_accounts
 from contextlib import contextmanager, ExitStack
 from order import bag_page_for_checkout, browser_cookies, log_bag, log_session
 from apple_store.request_log import account_name
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error as BrowserError, TimeoutError as BrowserTimeout
 
 BAG_URL = "https://www.apple.com.cn/shop/bag"
 
@@ -163,7 +167,7 @@ def ready_session(account):
         raise RuntimeError("常驻浏览器不可用；请先启动 session.py")
     name = account["账号"]
     print(f"[{name}] 连接诊断 | CDP={endpoint} | 配置资料目录={Path(account['资料目录']).resolve()}", flush=True)
-    with ExitStack() as stack:
+    with network.pause_rotation(), ExitStack() as stack:
         print(f"[{name}] 正在验证服务端结账会话。", flush=True)
         try:
             ready = stack.enter_context(prepared_session(endpoint, account["使用抓包代理"], proxy_url=account["代理地址"]))
@@ -203,6 +207,89 @@ def checkout_in_browser(session, page, sku, quantity, total):
         require_fulfillment(page_response(page))
 
 
+def retry_after_seconds(value):
+    if not value:
+        return 0
+    if value.isdigit():
+        return int(value)
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            raise ValueError("Retry-After 日期缺少时区")
+        return max(0, (date - datetime.now(timezone.utc)).total_seconds())
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("入口 Retry-After 格式非法；停止") from None
+
+
+def wait_product_entry(page, url, config):
+    """只重试商品页读取；返回成功导航，后续交接和写入不在循环内。"""
+    interval = RUN["入口重试间隔秒"]
+    rotation = RUN["入口轮转间隔秒"]
+    for name, value, allow_zero in (("入口重试间隔秒", interval, False),
+                                    ("入口轮转间隔秒", rotation, True)):
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or value < 0 or (not allow_zero and value == 0)):
+            raise ValueError(name + " 配置非法")
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname != "www.apple.com.cn" or not parsed.path.startswith("/shop/buy-iphone/"):
+        raise ValueError("入口必须是苹果中国大陆 iPhone 商品页")
+    for key in ("机型", "颜色", "容量"):
+        if not isinstance(config[key], str) or not config[key].strip():
+            raise ValueError("商品配置非法：" + key)
+    attempt = 0
+    while True:
+        attempt += 1
+        delay = interval
+        reason = "未返回预期商品数据"
+        with network.browser_entry(config["代理地址"], rotation):
+            if page.is_closed() or not page.context.browser.is_connected():
+                raise RuntimeError("浏览器已断开，停止入口等待")
+            try:
+                response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except BrowserTimeout:
+                reason = "商品页访问超时"
+                page.evaluate("window.stop()")
+                response = None
+            except BrowserError as error:
+                # 仅已知临时网络错误重试；浏览器关闭、证书和调用错误直接停止。
+                if not any(code in str(error) for code in (
+                    "net::ERR_CONNECTION_RESET", "net::ERR_CONNECTION_CLOSED",
+                    "net::ERR_CONNECTION_TIMED_OUT", "net::ERR_TIMED_OUT",
+                    "net::ERR_PROXY_CONNECTION_FAILED", "net::ERR_TUNNEL_CONNECTION_FAILED",
+                    "net::ERR_NAME_NOT_RESOLVED", "net::ERR_EMPTY_RESPONSE")):
+                    raise
+                reason = "商品页网络暂不可用"
+                response = None
+            if response is not None:
+                target = urlsplit(page.url)
+                if target.path == "/shop/signIn" or "idmsa.apple.com" == target.hostname:
+                    raise RuntimeError(AUTH_REQUIRED)
+                if target.hostname != "www.apple.com.cn":
+                    raise RuntimeError("商品入口跳转到其他主机；停止并检查浏览器")
+                if response.status in (401, 403, 407):
+                    raise RuntimeError(f"商品入口明确拒绝访问：HTTP {response.status}；请检查浏览器")
+                # 空响应/无 body 的错误页同样属于入口未就绪，不等待 DOM 元素。
+                text = page.evaluate("document.body ? document.body.innerText : ''")
+                if any(marker in text.lower() for marker in (
+                    "验证码", "验证你是真人", "verify you are human", "access denied")):
+                    raise RuntimeError("商品入口要求人工验证或拒绝访问；请检查浏览器")
+                delay = max(delay, retry_after_seconds(response.all_headers().get("retry-after")))
+                if response.status == 200:
+                    html = response.body().decode("utf-8")
+                    if "productSelectionData:" in html:
+                        # 已有商品结构时严格检查；选配错误不能当维护页吞掉。
+                        base.select_product(html, config)
+                        print(f"[{config['账号']}] 商品入口已就绪（第 {attempt} 次）；接续当前会话。", flush=True)
+                        return response
+                reason = f"入口未就绪（HTTP {response.status}）"
+        print(f"[{config['账号']}] {reason}；第 {attempt} 次，{delay:g} 秒后重试。", flush=True)
+        # 分段等待，及时响应 Ctrl+C，并让浏览器事件正常分发。
+        deadline = time.monotonic() + delay
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(min(250, max(1, (deadline - time.monotonic()) * 1000)))
+
+
+@network.pause_rotation()
 def prepare_checkout(account, endpoint, *, force=False):
     config = {**account, "允许访客结账": False, "使用抓包代理": RUN["使用抓包代理"], "代理地址": RUN["代理地址"]}
     with sync_playwright() as pw:
@@ -223,7 +310,8 @@ def prepare_checkout(account, endpoint, *, force=False):
                     return
         with base.browser_session(pw, config["商品页面"], include_page=True,
                                   cdp_endpoint=endpoint,
-                                  capture_proxy=config["使用抓包代理"], proxy_url=config["代理地址"]) as (session, page, product_page):
+                                  capture_proxy=config["使用抓包代理"], proxy_url=config["代理地址"],
+                                  entry_loader=lambda page, url: wait_product_entry(page, url, config)) as (session, page, product_page):
             log_session(session, page, "准备加购：浏览器到requests")
             product = base.select_product(product_page.content, config)
             bag = bag_page_for_checkout(session, product_page, config, product)
