@@ -14,7 +14,6 @@ from config.config import RUN, selected_accounts
 from order import base, checkout, StoreSelection541, log_bag, log_session
 from session import ready_session, checkout_in_browser
 from apple_store.request_log import account_name
-from rotate_clash import INTERVAL_SECONDS
 
 REQUIRED_KEYS = ("账号", "资料目录", "调试端口", "商品页面", "机型", "颜色", "容量", "数量", "自提门店",
                  "搜索地区", "省", "市", "区", "姓", "名", "手机号", "邮箱", "证件后四位",
@@ -146,7 +145,7 @@ def main():
     check_runtime()
     accounts = selected_accounts()
     check_accounts(accounts)
-    print(f"session/main 的 HTTP 请求共用跨进程锁；每 {INTERVAL_SECONDS} 秒在下一次请求前轮转并验证商品页。", flush=True)
+    print("各账号共享代理协调；购买上下文期间暂停轮转，入口读取可并行，HTTP 业务请求仍串行。", flush=True)
     print("本次下单账号：" + "、".join(account["账号"] for account in accounts), flush=True)
     print(f"启动 {len(accounts)} 个账号并行执行；各账号成功一单即停止，缺货独立轮询。", flush=True)
     results, failures = [], []

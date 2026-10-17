@@ -1,4 +1,6 @@
 """准备真实结账上下文，人工认证后保持浏览器供 main.py 接续。"""
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from threading import Event
 import math
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -221,7 +223,7 @@ def retry_after_seconds(value):
         raise ValueError("入口 Retry-After 格式非法；停止") from None
 
 
-def wait_product_entry(page, url, config):
+def wait_product_entry(page, url, config, *, stop_event=None, protect=None):
     """只重试商品页读取；返回成功导航，后续交接和写入不在循环内。"""
     interval = RUN["入口重试间隔秒"]
     rotation = RUN["入口轮转间隔秒"]
@@ -238,6 +240,8 @@ def wait_product_entry(page, url, config):
             raise ValueError("商品配置非法：" + key)
     attempt = 0
     while True:
+        if stop_event is not None and stop_event.is_set():
+            raise RuntimeError("用户已停止入口等待")
         attempt += 1
         delay = interval
         reason = "未返回预期商品数据"
@@ -279,6 +283,10 @@ def wait_product_entry(page, url, config):
                     if "productSelectionData:" in html:
                         # 已有商品结构时严格检查；选配错误不能当维护页吞掉。
                         base.select_product(html, config)
+                        if stop_event is not None and stop_event.is_set():
+                            raise RuntimeError("用户已停止，未开始加购")
+                        if protect is not None:
+                            protect()  # 仍持有入口共享锁，无间隙地延长购买保护。
                         print(f"[{config['账号']}] 商品入口已就绪（第 {attempt} 次）；接续当前会话。", flush=True)
                         return response
                 reason = f"入口未就绪（HTTP {response.status}）"
@@ -286,13 +294,14 @@ def wait_product_entry(page, url, config):
         # 分段等待，及时响应 Ctrl+C，并让浏览器事件正常分发。
         deadline = time.monotonic() + delay
         while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("用户已停止入口等待")
             page.wait_for_timeout(min(250, max(1, (deadline - time.monotonic()) * 1000)))
 
 
-@network.pause_rotation()
-def prepare_checkout(account, endpoint, *, force=False):
+def prepare_checkout(account, endpoint, *, force=False, stop_event=None):
     config = {**account, "允许访客结账": False, "使用抓包代理": RUN["使用抓包代理"], "代理地址": RUN["代理地址"]}
-    with sync_playwright() as pw:
+    with ExitStack() as protection, sync_playwright() as pw:
         browser = pw.chromium.connect_over_cdp(endpoint)
         base.validate_proxy(config["代理地址"], config["使用抓包代理"])
         base.require_browser_proxy(browser, config["代理地址"])
@@ -311,7 +320,11 @@ def prepare_checkout(account, endpoint, *, force=False):
         with base.browser_session(pw, config["商品页面"], include_page=True,
                                   cdp_endpoint=endpoint,
                                   capture_proxy=config["使用抓包代理"], proxy_url=config["代理地址"],
-                                  entry_loader=lambda page, url: wait_product_entry(page, url, config)) as (session, page, product_page):
+                                  entry_loader=lambda page, url: wait_product_entry(
+                                      page, url, config, stop_event=stop_event,
+                                      protect=lambda: protection.enter_context(network.pause_rotation()))) as (session, page, product_page):
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("用户已停止，未开始加购")
             log_session(session, page, "准备加购：浏览器到requests")
             product = base.select_product(product_page.content, config)
             bag = bag_page_for_checkout(session, product_page, config, product)
@@ -322,49 +335,88 @@ def prepare_checkout(account, endpoint, *, force=False):
                                 base.require(model, "shoppingCart", "summary", "d", "total"))
 
 
+def prepare_account(account, stop_event):
+    """每个工作线程自行创建 Playwright，浏览器对象不跨线程传递。"""
+    token = account_name.set(account["账号"])
+    try:
+        if stop_event.is_set():
+            raise RuntimeError("用户已停止准备")
+        endpoint = f"http://127.0.0.1:{account['调试端口']}"
+        if not live_endpoint(account):
+            profile = str(Path(account["资料目录"]).resolve())
+            Path(profile).mkdir(parents=True, exist_ok=True)
+            process = spawn_chrome([
+                str(base.CHROME_PATH), f"--user-data-dir={profile}",
+                f"--remote-debugging-port={account['调试端口']}", "--remote-debugging-address=127.0.0.1",
+                "--no-first-run", "--no-default-browser-check", f"--proxy-server={RUN['代理地址']}", BAG_URL,
+            ])
+            wait_ready(endpoint, process)
+        print(f"[{account['账号']}] 连接诊断 | CDP={endpoint} | 配置资料目录={Path(account['资料目录']).resolve()}", flush=True)
+        prepare_checkout(account, endpoint, stop_event=stop_event)
+        print(f"[{account['账号']}] {login_state(endpoint)}", flush=True)
+        return endpoint
+    finally:
+        account_name.reset(token)
+
+
+def prepare_accounts(accounts, stop_event):
+    """账号独立准备；失败只结束对应账号，主线程汇总并及时处理停止。"""
+    from main import describe_failure
+    sessions, failures = [], []
+    with ThreadPoolExecutor(max_workers=len(accounts)) as pool:
+        pending = {}
+        try:
+            for account in accounts:
+                pending[pool.submit(prepare_account, account, stop_event)] = account["账号"]
+            while pending:
+                try:
+                    done, _ = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                except KeyboardInterrupt:
+                    stop_event.set()
+                    print("收到停止指令：结束各账号入口等待；保留 Chrome。", flush=True)
+                    continue
+                for future in done:
+                    name = pending.pop(future)
+                    try:
+                        endpoint = future.result()
+                    except Exception as error:
+                        message = describe_failure(error)
+                        failures.append((name, message))
+                        print(f"[{name}] 准备停止：{message}", flush=True)
+                    else:
+                        sessions.append((name, endpoint))
+                        print(f"[{name}] 准备流程结束；其他账号继续独立准备。", flush=True)
+        finally:
+            if pending:
+                stop_event.set()
+    return sessions, failures
+
+
 def main():
+    from main import check_accounts
     base.validate_proxy(RUN["代理地址"], RUN["使用抓包代理"])
     if not base.CHROME_PATH.is_file():
         raise ValueError("找不到 Chrome，请检查 CHROME_PATH")
     accounts = selected_accounts()
-    print("本次准备账号：" + "、".join(account["账号"] for account in accounts), flush=True)
-    sessions = []
+    check_accounts(accounts)
+    print("本次并行准备账号：" + "、".join(account["账号"] for account in accounts), flush=True)
+    stop_event = Event()
     try:
-        for account in accounts:
-            endpoint = f"http://127.0.0.1:{account['调试端口']}"
-            process = None
-            if not live_endpoint(account):
-                profile = str(Path(account["资料目录"]).resolve())
-                Path(profile).mkdir(parents=True, exist_ok=True)
-                process = spawn_chrome([
-                    str(base.CHROME_PATH), f"--user-data-dir={profile}",
-                    f"--remote-debugging-port={account['调试端口']}", "--remote-debugging-address=127.0.0.1",
-                    "--no-first-run", "--no-default-browser-check", f"--proxy-server={RUN['代理地址']}", BAG_URL,
-                ])
-                sessions.append((account["账号"], endpoint, process))
-                wait_ready(endpoint, process)
-            else:
-                sessions.append((account["账号"], endpoint, None))
-            print(f"[{account['账号']}] 连接诊断 | CDP={endpoint} | 配置资料目录={Path(account['资料目录']).resolve()}", flush=True)
-            token = account_name.set(account["账号"])
-            try:
-                prepare_checkout(account, endpoint)
-            finally:
-                account_name.reset(token)
-            print(f"[{account['账号']}] {login_state(endpoint)}", flush=True)
+        sessions, failures = prepare_accounts(accounts, stop_event)
+        if stop_event.is_set():
+            return
+        if failures:
+            raise RuntimeError("部分账号准备失败：" + "、".join(name for name, _ in failures)
+                               + "；其他账号的浏览器已保留")
         print("仅出现‘需要人工认证’时，请在对应窗口完成安全结账登录及双重认证。", flush=True)
         print("另开终端运行 .venv/Scripts/python.exe v2/main.py；结账过期时会自动准备一次。", flush=True)
-        print("保持窗口打开；main.py 启动后不要操作页面。Ctrl+C 只停止本脚本，保留浏览器。", flush=True)
-        while True:
-            time.sleep(300)
-            summary = "，".join(f"{name}={login_state(endpoint)}" for name, endpoint, _ in sessions)
+        print("保持窗口打开；main.py 启动后不要操作页面。Ctrl+C 保留浏览器。", flush=True)
+        while not stop_event.wait(300):
+            summary = "，".join(f"{name}={login_state(endpoint)}" for name, endpoint in sessions)
             print(f"[{time.strftime('%H:%M')}] {summary}", flush=True)
     except KeyboardInterrupt:
+        stop_event.set()
         print("收到退出信号；保持已启动 Chrome 会话，不自动关闭浏览器。", flush=True)
-    finally:
-        # Chrome 使用独立进程运行，用户可能需要继续观察购物袋、完成登录或处理认证。
-        # 不在这里 terminate，避免 IDE 停止 Python 后会话窗口立即消失。
-        pass
 
 
 if __name__ == "__main__":
